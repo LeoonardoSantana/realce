@@ -4,9 +4,25 @@ export const DEFAULTS = {
   fast: { sharp: 40, noise: 20, bright: 0, contrast: 5, sat: 5, definition: 0 }
 };
 
-export const AUTO = {
-  ia: { sharp: 20, noise: 0, bright: 0, contrast: 5, sat: 8, definition: 30 },
-  fast: { sharp: 50, noise: 25, bright: 0, contrast: 8, sat: 10, definition: 35 }
+export const PRESETS = {
+  natural: {
+    label: 'Natural',
+    hint: 'Fiel al original: limpia y define sin que se note el procesado.',
+    ia:   { sharp: 10, definition: 10, noise: 0,  bright: 0, contrast: 0,  sat: 0 },
+    fast: { sharp: 30, definition: 10, noise: 15, bright: 0, contrast: 3,  sat: 3 }
+  },
+  claridad: {
+    label: 'Claridad',
+    hint: 'Máximo detalle y textura: ideal para paisajes, arquitectura y texto.',
+    ia:   { sharp: 30, definition: 45, noise: 0,  bright: 0, contrast: 5,  sat: 5 },
+    fast: { sharp: 60, definition: 45, noise: 25, bright: 0, contrast: 6,  sat: 5 }
+  },
+  vivido: {
+    label: 'Vívido',
+    hint: 'Más color y contraste con buena definición: ideal para redes y retratos.',
+    ia:   { sharp: 20, definition: 30, noise: 0,  bright: 3, contrast: 12, sat: 20 },
+    fast: { sharp: 45, definition: 30, noise: 20, bright: 3, contrast: 12, sat: 20 }
+  }
 };
 
 export const state = {
@@ -20,6 +36,7 @@ export const state = {
   duration: 0,
   resolution: '2K',
   engine: 'ia',
+  preset: null,
   format: 'png',
   quality: 0.9,
   adj: { ...DEFAULTS.ia },

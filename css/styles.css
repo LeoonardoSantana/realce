@@ -115,6 +115,31 @@ button {
   letter-spacing: -.01em;
 }
 
+.nav-open {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.nav-open[hidden] {
+  display: none;
+}
+
+.nav-open .short {
+  display: none;
+}
+
+@media (max-width: 480px) {
+  .nav-open .full {
+    display: none;
+  }
+
+  .nav-open .short {
+    display: inline;
+  }
+}
+
 /* ================= Hero ================= */
 .hero {
   text-align: center;
@@ -613,6 +638,28 @@ button {
 .hist img {
   width: 110px;
   display: block;
+}
+
+/* ================= Overlay de soltar ================= */
+#dropOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .28);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  pointer-events: none;
+}
+
+#dropOverlay[hidden] {
+  display: none;
 }
 
 /* ================= Toasts ================= */

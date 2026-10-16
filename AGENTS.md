@@ -8,11 +8,11 @@ local en el navegador. Nada se sube a ningún servidor.
 - `index.html` — solo marcado (módulo ES `js/main.js`).
 - `css/styles.css` — estilos (claro/oscuro, estilo Apple).
 - `js/main.js` — arranque: crea el enhancer, conecta módulos, registra el SW.
-- `js/state.js` — `state`, `DEFAULTS`/`AUTO` por motor.
+- `js/state.js` — `state`, `DEFAULTS`/`PRESETS` por motor (Natural/Claridad/Vívido).
 - `js/utils.js` — `$`, formatos, toast, progreso, descarga, `loadScript`.
 - `js/gl-enhancer.js` — shaders Catmull-Rom + GLEnhancer + Canvas2DEnhancer.
 - `js/ai.js` — Real-ESRGAN vía ONNX Runtime Web (teselado 128, PAD 12).
-- `js/video.js` — proceso de video (MediaRecorder, audio, wake lock, seek).
+- `js/video.js` — proceso de video (MediaRecorder, audio, wake lock, seek) y captura de fotogramas (guardar o abrir con IA).
 - `js/compare.js` — comparador Antes/Después con zoom/pan/pinch.
 - `js/segmented.js` — componente segmentado estilo iOS.
 - `js/export.js` — exportar imagen, compartir, historial.

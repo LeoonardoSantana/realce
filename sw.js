@@ -1,5 +1,5 @@
 'use strict';
-const CACHE = 'realce-v6';
+const CACHE = 'realce-v7';
 const CORE = [
   './',
   'index.html',

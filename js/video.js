@@ -1,10 +1,12 @@
 import { $, toast, formatTime, showProgress, hideProgress, downloadBlob } from './utils.js';
 import { state } from './state.js';
-import { exportImage, addHistory, outputName } from './export.js';
+import { exportImage, addHistory, outputName, baseName } from './export.js';
 
 /* ================= Procesado de video ================= */
 let renderFrame = () => {};
 let updateUI = () => {};
+let openFileFn = () => {};
+let setEngineFn = () => {};
 const video = () => $('#vid');
 
 async function setupAudio(stream) {
@@ -151,9 +153,16 @@ export async function processVideo() {
   toast('Video mejorado descargado', 'ok');
 }
 
+function frameStamp(vid) {
+  const t = vid.currentTime || 0;
+  return Math.floor(t / 60) + 'm' + String(Math.floor(t % 60)).padStart(2, '0') + 's';
+}
+
 export function initVideo(callbacks) {
   renderFrame = callbacks.renderCurrent;
   updateUI = callbacks.updateUI;
+  openFileFn = callbacks.openFile;
+  setEngineFn = callbacks.setEngine;
   const vid = video();
   const seek = $('#seek');
   seek.addEventListener('input', () => {
@@ -170,8 +179,27 @@ export function initVideo(callbacks) {
     }
   });
   $('#btnFrame').onclick = () => {
-    renderFrame();
-    exportImage();
+    if (!state.busy) renderFrame();
+    const ext = state.format === 'jpg' ? 'jpg' : state.format;
+    exportImage(`${baseName()}-fotograma-${frameStamp(vid)}-${state.resolution}.${ext}`);
+  };
+  $('#btnFrameAI').onclick = () => {
+    if (state.busy) return;
+    const c = document.createElement('canvas');
+    c.width = vid.videoWidth;
+    c.height = vid.videoHeight;
+    c.getContext('2d').drawImage(vid, 0, 0);
+    c.toBlob(async b => {
+      if (!b) {
+        toast('No se pudo capturar el fotograma', 'err');
+        return;
+      }
+      const f = new File([b], `${baseName()}-fotograma-${frameStamp(vid)}.png`, { type: 'image/png' });
+      const ok = await openFileFn(f);
+      if (!ok) return;
+      setEngineFn('ia');
+      toast('Fotograma abierto como imagen. Pulsa «Mejorar con IA».');
+    }, 'image/png');
   };
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && state.busy && state.mediaType === 'video' && !vid.paused) lockWake();

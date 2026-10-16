@@ -1,5 +1,5 @@
 import { $, toast, formatMB, formatTime, showProgress, hideProgress } from './utils.js';
-import { state, DEFAULTS, AUTO } from './state.js';
+import { state, DEFAULTS, PRESETS } from './state.js';
 import { createSegmented, refreshAllSegmented } from './segmented.js';
 import { resetView } from './compare.js';
 import { loadAI, upscaleWithAI } from './ai.js';
@@ -25,6 +25,7 @@ export function renderCurrent() {
   const vid = video();
   if (state.mediaType === 'video' && vid.readyState < 2) return;
   const src = state.mediaType === 'image' ? (state.aiSource || state.image) : vid;
+  if (!src) return;
   state.enhancer.render(src, params());
   const orig = state.mediaType === 'image' ? state.image : vid;
   const cb = beforeCanvas();
@@ -75,7 +76,38 @@ export function updateTarget() {
 }
 
 /* ================= Segmentados ================= */
-let segRes, segEng, segFmt;
+let segRes, segEng, segFmt, segPreset;
+
+const effectiveEngine = () => state.mediaType === 'video' ? 'fast' : state.engine;
+
+function updatePresetHint() {
+  $('#presetHint').textContent = state.preset
+    ? PRESETS[state.preset].hint
+    : 'Ajustes personalizados';
+}
+
+function applyPreset(key) {
+  state.preset = key;
+  state.adj = { ...PRESETS[key][effectiveEngine()] };
+  syncSliders();
+  updatePresetHint();
+  scheduleRender();
+}
+
+export function applyEngine(v) {
+  state.engine = v;
+  if (v === 'fast') state.aiSource = null;
+  state.adj = { ...(state.preset ? PRESETS[state.preset][effectiveEngine()] : DEFAULTS[v]) };
+  syncSliders();
+  updatePresetHint();
+  updateUI();
+  renderCurrent();
+}
+
+export function setEngine(v) {
+  segEng.set(v);
+  applyEngine(v);
+}
 
 /* ================= Sliders ================= */
 const SLIDERS = [
@@ -118,8 +150,10 @@ export function updateUI() {
   $('#btnDl').hidden = !img;
   $('#btnDl').className = 'btn ' + (img && state.engine !== 'ia' ? 'btn-p' : 'btn-s');
   document.querySelectorAll('#ws input,#ws button').forEach(b => {
-    if (b.id !== 'btnCancel') b.disabled = state.busy;
+    if (b.id !== 'btnCancel' && b.id !== 'btnFrame') b.disabled = state.busy;
   });
+  $('#btnNavOpen').hidden = !state.file;
+  $('#btnNavOpen').disabled = state.busy;
 }
 
 /* ================= Entrada de archivo ================= */
@@ -166,17 +200,17 @@ async function fixInfiniteDuration(vid) {
   });
 }
 
-async function openFile(f) {
-  if (!f) return;
+export async function openFile(f) {
+  if (!f) return false;
   if (state.busy) {
     toast('Espera a que termine o cancela el proceso');
-    return;
+    return false;
   }
   const isImg = f.type.startsWith('image/');
   const isVid = f.type.startsWith('video/');
   if (!isImg && !isVid) {
     toast('El archivo debe ser una imagen o un video', 'err');
-    return;
+    return false;
   }
   cleanup();
   state.file = f;
@@ -212,7 +246,7 @@ async function openFile(f) {
     toast('No se pudo leer el archivo', 'err');
     cleanup();
     state.file = null;
-    return;
+    return false;
   }
   if (!state.glOK)
     toast('WebGL no disponible: motor de reserva (sin nitidez ni reducción de ruido)', 'err');
@@ -226,6 +260,7 @@ async function openFile(f) {
     refreshAllSegmented();
     renderCurrent();
   });
+  return true;
 }
 
 function initFileInput() {
@@ -263,6 +298,29 @@ function initFileInput() {
     fileIn.value = '';
   };
   $('#btnChange').onclick = () => fileIn.click();
+  $('#btnNavOpen').onclick = () => fileIn.click();
+  let docDragDepth = 0;
+  const overlay = $('#dropOverlay');
+  document.addEventListener('dragover', e => e.preventDefault());
+  document.addEventListener('dragenter', () => {
+    if ($('#ws').hidden) return;
+    if (++docDragDepth === 1) overlay.hidden = false;
+  });
+  document.addEventListener('dragleave', () => {
+    if (--docDragDepth <= 0) {
+      docDragDepth = 0;
+      overlay.hidden = true;
+    }
+  });
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    const wasOver = docDragDepth > 0;
+    docDragDepth = 0;
+    overlay.hidden = true;
+    if ($('#ws').hidden || !wasOver) return;
+    const f = e.dataTransfer && e.dataTransfer.files[0];
+    if (f) openFile(f);
+  });
   window.addEventListener('paste', e => {
     const item = [...(e.clipboardData ? e.clipboardData.items : [])]
       .find(i => i.type.startsWith('image/'));
@@ -304,12 +362,7 @@ async function processImage() {
     if (e && e.name === 'AbortError') {
       toast('Proceso cancelado');
     } else {
-      state.engine = 'fast';
-      segEng.set('fast');
-      state.aiSource = null;
-      state.adj = { ...DEFAULTS.fast };
-      syncSliders();
-      renderCurrent();
+      setEngine('fast');
       toast('La IA falló; se usa el motor rápido', 'err');
     }
   } finally {
@@ -328,14 +381,10 @@ export function initUI() {
       renderCurrent();
     }
   });
-  segEng = createSegmented($('#segEng'), [['ia', 'IA'], ['fast', 'Rápido']], state.engine, v => {
-    state.engine = v;
-    if (v === 'fast') state.aiSource = null;
-    state.adj = { ...DEFAULTS[v] };
-    syncSliders();
-    updateUI();
-    renderCurrent();
-  });
+  segEng = createSegmented($('#segEng'), [['ia', 'IA'], ['fast', 'Rápido']], state.engine, applyEngine);
+  segPreset = createSegmented($('#segPreset'),
+    [['natural', 'Natural'], ['claridad', 'Claridad'], ['vivido', 'Vívido']],
+    state.preset, applyPreset);
   segFmt = createSegmented($('#segFmt'), [['png', 'PNG'], ['jpg', 'JPG'], ['webp', 'WebP']],
     state.format, v => {
       state.format = v;
@@ -345,20 +394,23 @@ export function initUI() {
     $('#' + id).addEventListener('input', e => {
       state.adj[key] = +e.target.value;
       $('#' + valId).textContent = e.target.value;
+      if (state.preset) {
+        state.preset = null;
+        segPreset.set(null);
+      }
+      updatePresetHint();
       scheduleRender();
     }));
   $('#slQ').addEventListener('input', e => {
     state.quality = +e.target.value / 100;
     $('#vQ').textContent = e.target.value;
   });
-  $('#btnAuto').onclick = () => {
-    state.adj = { ...AUTO[state.engine] };
-    syncSliders();
-    scheduleRender();
-  };
   $('#btnReset').onclick = () => {
-    state.adj = { ...DEFAULTS[state.engine] };
+    state.adj = { ...DEFAULTS[effectiveEngine()] };
+    state.preset = null;
+    segPreset.set(null);
     syncSliders();
+    updatePresetHint();
     scheduleRender();
   };
   $('#btnGo').onclick = () => {

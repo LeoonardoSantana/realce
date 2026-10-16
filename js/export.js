@@ -4,9 +4,12 @@ import { state } from './state.js';
 /* ================= Exportar / historial ================= */
 const MIME = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' };
 
+export function baseName() {
+  return state.file ? state.file.name.replace(/\.[^.]+$/, '') : 'realce';
+}
+
 export function outputName(ext) {
-  const base = state.file ? state.file.name.replace(/\.[^.]+$/, '') : 'realce';
-  return `${base}-${state.resolution}.${ext}`;
+  return `${baseName()}-${state.resolution}.${ext}`;
 }
 
 function renderHistory() {
@@ -40,7 +43,7 @@ export function addHistory(blob, name) {
   renderHistory();
 }
 
-export function exportImage() {
+export function exportImage(nameOverride) {
   const after = $('#cvAfter');
   const finish = b => {
     if (!b) {
@@ -48,7 +51,7 @@ export function exportImage() {
       return;
     }
     const ext = state.format === 'jpg' ? 'jpg' : state.format;
-    const name = outputName(ext);
+    const name = nameOverride || outputName(ext);
     downloadBlob(b, name);
     addHistory(b, name);
     const file = new File([b], name, { type: MIME[state.format] });

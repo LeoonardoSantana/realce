@@ -2,7 +2,7 @@ import { $ } from './utils.js';
 import { state } from './state.js';
 import { createEnhancer } from './gl-enhancer.js';
 import { initCompare } from './compare.js';
-import { initUI, renderCurrent, updateUI } from './ui.js';
+import { initUI, renderCurrent, updateUI, openFile, setEngine } from './ui.js';
 import { initVideo } from './video.js';
 import { initExport } from './export.js';
 
@@ -12,7 +12,7 @@ state.enhancer = enhancer;
 state.glOK = glOK;
 
 initCompare();
-initVideo({ renderCurrent, updateUI });
+initVideo({ renderCurrent, updateUI, openFile, setEngine });
 initExport();
 initUI();
 
