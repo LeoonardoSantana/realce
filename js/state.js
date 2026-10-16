@@ -45,6 +45,7 @@ export const state = {
   tooBig: false,
   downscaled: false,
   aiLoad: null,
+  aborter: null,
   aiEP: null,
   audioCtx: null,
   mediaSource: null,

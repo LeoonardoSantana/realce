@@ -1,5 +1,5 @@
 'use strict';
-const CACHE = 'realce-v7';
+const CACHE = 'realce-v8';
 const CORE = [
   './',
   'index.html',
@@ -15,6 +15,7 @@ const CORE = [
   'js/segmented.js',
   'js/export.js',
   'js/ui.js',
+  'js/video-export.js',
   'icons/icon.svg',
   'icons/icon-192.png',
   'icons/icon-512.png',
@@ -43,7 +44,7 @@ self.addEventListener('fetch', e => {
   const nav = e.request.mode === 'navigate';
   const url = new URL(e.request.url);
   const sameOrigin = url.origin === location.origin;
-  const immutable = !sameOrigin || url.pathname.includes('/models/');
+  const immutable = !sameOrigin || url.pathname.includes('/models/') || url.pathname.includes('/vendor/');
   if (immutable) {
     // CDN y modelo ONNX: cache-first con guardado en runtime
     e.respondWith(

@@ -1,13 +1,20 @@
 import { $, toast, formatTime, showProgress, hideProgress, downloadBlob } from './utils.js';
 import { state } from './state.js';
 import { exportImage, addHistory, outputName, baseName } from './export.js';
+import { exportVideoWebCodecs } from './video-export.js';
 
 /* ================= Procesado de video ================= */
 let renderFrame = () => {};
 let updateUI = () => {};
 let openFileFn = () => {};
 let setEngineFn = () => {};
+let paramsFn = () => ({ sharp: 0, noise: 0, bright: 0, contrast: 0, sat: 0, definition: 0 });
+let frameCanvas = null;
 const video = () => $('#vid');
+
+export function webCodecsSupported() {
+  return 'VideoEncoder' in window && 'VideoDecoder' in window;
+}
 
 async function setupAudio(stream) {
   try {
@@ -41,6 +48,79 @@ async function unlockWake() {
 }
 
 export async function processVideo() {
+  if (webCodecsSupported()) return processVideoWebCodecs();
+  return processVideoRecorder();
+}
+
+/* ---- Fotograma a fotograma (WebCodecs + Mediabunny) ---- */
+function renderSample(sample) {
+  if (!frameCanvas) frameCanvas = document.createElement('canvas');
+  const w = sample.displayWidth;
+  const h = sample.displayHeight;
+  if (frameCanvas.width !== w || frameCanvas.height !== h) {
+    frameCanvas.width = w;
+    frameCanvas.height = h;
+  }
+  sample.draw(frameCanvas.getContext('2d'), 0, 0);
+  state.enhancer.render(frameCanvas, paramsFn());
+  const cb = $('#cvBefore');
+  cb.getContext('2d').drawImage(frameCanvas, 0, 0, cb.width, cb.height);
+  return $('#cvAfter');
+}
+
+async function processVideoWebCodecs() {
+  state.busy = true;
+  state.cancelled = false;
+  updateUI();
+  showProgress(0, 'Generando video…');
+  await lockWake();
+  const aborter = new AbortController();
+  state.aborter = aborter;
+  const t0 = performance.now();
+  try {
+    const blob = await exportVideoWebCodecs({
+      file: state.file,
+      width: state.target.w,
+      height: state.target.h,
+      render: renderSample,
+      onProgress: p => {
+        const elapsed = (performance.now() - t0) / 1000;
+        const eta = p > 0 ? elapsed / p * (1 - p) : 0;
+        showProgress(p * 100,
+          `Generando video · ${Math.round(p * 100)} % · quedan ${formatTime(eta)}`);
+      },
+      signal: aborter.signal
+    });
+    const name = outputName('mp4');
+    downloadBlob(blob, name);
+    addHistory(blob, name);
+    toast('Video mejorado descargado', 'ok');
+  } catch (e) {
+    const mb = await import('../vendor/mediabunny-1.61.3.min.mjs').catch(() => null);
+    if (state.cancelled || (mb && e instanceof mb.ConversionCanceledError)) {
+      toast('Proceso cancelado');
+    } else {
+      state.busy = false;
+      state.aborter = null;
+      hideProgress();
+      updateUI();
+      await unlockWake();
+      toast('No se pudo generar el video con este método; se usará la grabación en tiempo real', 'err');
+      return processVideoRecorder();
+    }
+  } finally {
+    if (state.aborter === aborter) {
+      state.busy = false;
+      state.aborter = null;
+      hideProgress();
+      updateUI();
+      await unlockWake();
+    }
+  }
+}
+
+/* ---- Grabación en tiempo real (MediaRecorder) ---- */
+async function processVideoRecorder() {
   const afterCanvas = $('#cvAfter');
   const vid = video();
   if (!afterCanvas.captureStream || !window.MediaRecorder) {
@@ -117,7 +197,7 @@ export async function processVideo() {
     if (hadAudio) toast('Se grabará sin audio');
   }
   const loop = () => {
-    if (state.cancelled || vid.ended) return;
+    if (state.cancelled || vid.ended || !state.busy) return;
     renderFrame();
     const p = vid.duration ? vid.currentTime / vid.duration : 0;
     showProgress(p * 100, `Quedan ${formatTime(vid.duration - vid.currentTime)}`);
@@ -125,11 +205,50 @@ export async function processVideo() {
     else requestAnimationFrame(loop);
   };
   loop();
+  let stoppedEarly = false;
+  let videoError = false;
   await new Promise(res => {
-    let iv;
-    const done = () => { clearInterval(iv); res(); };
-    iv = setInterval(() => { if (state.cancelled) done(); }, 150);
-    vid.addEventListener('ended', done, { once: true });
+    let settled = false;
+    let lastT = vid.currentTime;
+    let lastAdvance = performance.now();
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearInterval(iv);
+      vid.removeEventListener('ended', finish);
+      vid.removeEventListener('timeupdate', onTime);
+      vid.removeEventListener('error', onErr);
+      res();
+    };
+    const onTime = () => {
+      if (vid.duration && vid.currentTime >= vid.duration - 0.05) finish();
+    };
+    const onErr = () => {
+      videoError = true;
+      finish();
+    };
+    const iv = setInterval(() => {
+      if (state.cancelled) {
+        finish();
+        return;
+      }
+      if (vid.ended || (vid.duration && vid.currentTime >= vid.duration - 0.05)) {
+        finish();
+        return;
+      }
+      if (!vid.paused) {
+        if (vid.currentTime !== lastT) {
+          lastT = vid.currentTime;
+          lastAdvance = performance.now();
+        } else if (performance.now() - lastAdvance > 4000) {
+          stoppedEarly = true;
+          finish();
+        }
+      }
+    }, 250);
+    vid.addEventListener('ended', finish);
+    vid.addEventListener('timeupdate', onTime);
+    vid.addEventListener('error', onErr);
   });
   vid.pause();
   vid.muted = true;
@@ -144,6 +263,12 @@ export async function processVideo() {
     toast('Proceso cancelado');
     return;
   }
+  if (videoError) {
+    toast('Error al leer el video durante el procesado', 'err');
+    return;
+  }
+  if (stoppedEarly)
+    toast('El video se detuvo antes de tiempo; se guardó lo procesado');
   const type = mime || 'video/webm';
   const blob = new Blob(chunks, { type });
   const ext = type.includes('mp4') ? 'mp4' : 'webm';
@@ -163,6 +288,7 @@ export function initVideo(callbacks) {
   updateUI = callbacks.updateUI;
   openFileFn = callbacks.openFile;
   setEngineFn = callbacks.setEngine;
+  paramsFn = callbacks.params;
   const vid = video();
   const seek = $('#seek');
   seek.addEventListener('input', () => {

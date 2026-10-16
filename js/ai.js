@@ -1,4 +1,4 @@
-import { formatTime, showProgress, loadScript } from './utils.js';
+import { formatTime, showProgress, loadScript, toast } from './utils.js';
 import { state } from './state.js';
 
 /* ================= Motor IA (Real-ESRGAN + ONNX Runtime Web) ================= */
@@ -48,14 +48,26 @@ export function loadAI() {
 const clampByte = v => v <= 0 ? 0 : v >= 1 ? 255 : v * 255;
 
 export async function upscaleWithAI() {
-  const ow = state.origW;
-  const oh = state.origH;
-  const srcCanvas = document.createElement('canvas');
-  srcCanvas.width = ow;
-  srcCanvas.height = oh;
-  const sctx = srcCanvas.getContext('2d', { willReadFrequently: true });
-  sctx.drawImage(state.image, 0, 0);
-  const pixels = sctx.getImageData(0, 0, ow, oh).data;
+  const ow0 = state.origW;
+  const oh0 = state.origH;
+  const destLong = Math.max(state.target.w, state.target.h);
+  let work = state.image;
+  let ow = ow0;
+  let oh = oh0;
+  if (Math.max(ow0, oh0) > destLong) {
+    const f = destLong / Math.max(ow0, oh0);
+    ow = Math.max(1, Math.round(ow0 * f));
+    oh = Math.max(1, Math.round(oh0 * f));
+    work = document.createElement('canvas');
+    work.width = ow;
+    work.height = oh;
+    const wctx = work.getContext('2d', { willReadFrequently: true });
+    wctx.imageSmoothingEnabled = true;
+    wctx.imageSmoothingQuality = 'high';
+    wctx.drawImage(state.image, 0, 0, ow, oh);
+  }
+  const pixels = work.getContext('2d', { willReadFrequently: true })
+    .getImageData(0, 0, ow, oh).data;
   let hasAlpha = false;
   for (let i = 3; i < pixels.length; i += 4) {
     if (pixels[i] < 255) {
@@ -63,10 +75,10 @@ export async function upscaleWithAI() {
       break;
     }
   }
-  const k = Math.min(1, Math.max(state.target.w, state.target.h) / (4 * Math.max(ow, oh)));
+  const k = Math.min(1, destLong / (4 * Math.max(ow0, oh0)));
   const out = document.createElement('canvas');
-  out.width = Math.round(4 * ow * k);
-  out.height = Math.round(4 * oh * k);
+  out.width = Math.round(4 * ow0 * k);
+  out.height = Math.round(4 * oh0 * k);
   const octx = out.getContext('2d');
   octx.imageSmoothingEnabled = true;
   octx.imageSmoothingQuality = 'high';
@@ -81,6 +93,8 @@ export async function upscaleWithAI() {
   const nx = Math.ceil(ow / STRIDE);
   const ny = Math.ceil(oh / STRIDE);
   const total = nx * ny;
+  if (total > 300)
+    toast(`Imagen grande: la IA puede tardar unos minutos (${total} bloques)`);
   let done = 0;
   const t0 = performance.now();
   for (let ty = 0; ty < ny; ty++) {
@@ -131,7 +145,7 @@ export async function upscaleWithAI() {
   }
   if (hasAlpha) {
     octx.globalCompositeOperation = 'destination-in';
-    octx.drawImage(state.image, 0, 0, out.width, out.height);
+    octx.drawImage(work, 0, 0, out.width, out.height);
     octx.globalCompositeOperation = 'source-over';
   }
   return out;

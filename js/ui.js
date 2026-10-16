@@ -3,7 +3,7 @@ import { state, DEFAULTS, PRESETS } from './state.js';
 import { createSegmented, refreshAllSegmented } from './segmented.js';
 import { resetView } from './compare.js';
 import { loadAI, upscaleWithAI } from './ai.js';
-import { processVideo } from './video.js';
+import { processVideo, webCodecsSupported } from './video.js';
 import { exportImage } from './export.js';
 
 /* ================= Render / vista previa ================= */
@@ -11,7 +11,7 @@ const video = () => $('#vid');
 const beforeCanvas = () => $('#cvBefore');
 const beforeCtx = () => beforeCanvas().getContext('2d');
 
-const params = () => ({
+export const params = () => ({
   sharp: state.adj.sharp,
   noise: state.adj.noise,
   bright: state.adj.bright,
@@ -71,7 +71,7 @@ export function updateTarget() {
   $('#resHint').textContent = state.tooBig
     ? 'La resolución destino supera el límite de textura de tu GPU.'
     : (state.downscaled
-      ? `El original ya supera esta resolución; se ajustará a ${w}×${h}.`
+      ? `El original ya supera esta resolución; la IA lo limpiará y reconstruirá el detalle a ${w}×${h}.`
       : `Salida: ${w}×${h} px`);
 }
 
@@ -143,6 +143,9 @@ export function updateUI() {
     : 'La IA no está disponible para video (sería demasiado lenta en el navegador).';
   $('#vseek').hidden = img;
   $('#vnote').hidden = img;
+  $('#vnote').textContent = webCodecsSupported()
+    ? 'El video se genera fotograma a fotograma y se descarga al terminar. No hace falta reproducirlo.'
+    : 'El video se procesa en tiempo real: tarda lo mismo que dura. Mantén la pestaña visible.';
   $('#qRow').style.opacity = state.format === 'png' ? .4 : 1;
   $('#slQ').disabled = state.format === 'png';
   $('#btnGo').hidden = img && state.engine !== 'ia';
@@ -337,12 +340,6 @@ async function processImage() {
     renderCurrent();
     return;
   }
-  const need = Math.max(state.target.w, state.target.h) / Math.max(state.origW, state.origH);
-  if (need <= 1) {
-    toast('La imagen ya supera la resolución destino; se usa el motor rápido');
-    renderCurrent();
-    return;
-  }
   const fileRef = state.file;
   state.busy = true;
   state.cancelled = false;
@@ -351,8 +348,6 @@ async function processImage() {
   try {
     await loadAI();
     updateUI();
-    if (state.origW * state.origH > 1.5e6)
-      toast('Imagen grande: la IA puede tardar varios minutos');
     const out = await upscaleWithAI();
     if (state.file !== fileRef) return;
     state.aiSource = out;
@@ -429,6 +424,7 @@ export function initUI() {
   };
   $('#btnCancel').onclick = () => {
     state.cancelled = true;
+    if (state.aborter) state.aborter.abort();
   };
   window.addEventListener('resize', refreshAllSegmented);
   initFileInput();
