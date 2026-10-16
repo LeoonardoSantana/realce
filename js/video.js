@@ -2,13 +2,14 @@ import { $, toast, formatTime, showProgress, hideProgress, downloadBlob } from '
 import { state } from './state.js';
 import { exportImage, addHistory, outputName, baseName } from './export.js';
 import { exportVideoWebCodecs } from './video-export.js';
+import { loadAI, upscaleWithAI } from './ai.js';
 
 /* ================= Procesado de video ================= */
 let renderFrame = () => {};
 let updateUI = () => {};
 let openFileFn = () => {};
 let setEngineFn = () => {};
-let paramsFn = () => ({ sharp: 0, noise: 0, bright: 0, contrast: 0, sat: 0, definition: 0 });
+let paramsFn = () => ({ sharp: 0, noise: 0, skin: 0, fidelity: 0, bright: 0, contrast: 0, sat: 0, definition: 0 });
 let frameCanvas = null;
 const video = () => $('#vid');
 
@@ -53,7 +54,7 @@ export async function processVideo() {
 }
 
 /* ---- Fotograma a fotograma (WebCodecs + Mediabunny) ---- */
-function renderSample(sample) {
+async function renderSample(sample) {
   if (!frameCanvas) frameCanvas = document.createElement('canvas');
   const w = sample.displayWidth;
   const h = sample.displayHeight;
@@ -62,7 +63,12 @@ function renderSample(sample) {
     frameCanvas.height = h;
   }
   sample.draw(frameCanvas.getContext('2d'), 0, 0);
-  state.enhancer.render(frameCanvas, paramsFn());
+  if (state.engine === 'ia') {
+    const aiOut = await upscaleWithAI(frameCanvas, true);
+    state.enhancer.render(aiOut, paramsFn(), frameCanvas);
+  } else {
+    state.enhancer.render(frameCanvas, paramsFn(), frameCanvas);
+  }
   const cb = $('#cvBefore');
   cb.getContext('2d').drawImage(frameCanvas, 0, 0, cb.width, cb.height);
   return $('#cvAfter');
@@ -72,12 +78,16 @@ async function processVideoWebCodecs() {
   state.busy = true;
   state.cancelled = false;
   updateUI();
-  showProgress(0, 'Generando video…');
+  showProgress(0, state.engine === 'ia' ? 'Cargando modelo de IA para video…' : 'Generando video…');
   await lockWake();
   const aborter = new AbortController();
   state.aborter = aborter;
-  const t0 = performance.now();
   try {
+    if (state.engine === 'ia') {
+      await loadAI();
+      updateUI();
+    }
+    const t0 = performance.now();
     const blob = await exportVideoWebCodecs({
       file: state.file,
       width: state.target.w,
@@ -86,14 +96,19 @@ async function processVideoWebCodecs() {
       onProgress: p => {
         const elapsed = (performance.now() - t0) / 1000;
         const eta = p > 0 ? elapsed / p * (1 - p) : 0;
+        const label = state.engine === 'ia' ? 'Video con IA' : 'Generando video';
         showProgress(p * 100,
-          `Generando video · ${Math.round(p * 100)} % · quedan ${formatTime(eta)}`);
+          `${label} · ${Math.round(p * 100)} % · quedan ${formatTime(eta)}`);
       },
       signal: aborter.signal
     });
     const name = outputName('mp4');
     downloadBlob(blob, name);
     addHistory(blob, name);
+    const sharedFile = new File([blob], name, { type: 'video/mp4' });
+    state.share = (navigator.canShare && navigator.canShare({ files: [sharedFile] }))
+      ? { files: [sharedFile], title: name }
+      : null;
     toast('Video mejorado descargado', 'ok');
   } catch (e) {
     const mb = await import('../vendor/mediabunny-1.61.3.min.mjs').catch(() => null);
@@ -275,6 +290,10 @@ async function processVideoRecorder() {
   const name = outputName(ext);
   downloadBlob(blob, name);
   addHistory(blob, name);
+  const sharedFile = new File([blob], name, { type });
+  state.share = (navigator.canShare && navigator.canShare({ files: [sharedFile] }))
+    ? { files: [sharedFile], title: name }
+    : null;
   toast('Video mejorado descargado', 'ok');
 }
 

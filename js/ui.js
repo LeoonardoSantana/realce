@@ -1,10 +1,10 @@
 import { $, toast, formatMB, formatTime, showProgress, hideProgress } from './utils.js';
-import { state, DEFAULTS, PRESETS } from './state.js';
+import { state, DEFAULTS, PRESETS, AI_MODELS } from './state.js';
 import { createSegmented, refreshAllSegmented } from './segmented.js';
 import { resetView } from './compare.js';
 import { loadAI, upscaleWithAI } from './ai.js';
 import { processVideo, webCodecsSupported } from './video.js';
-import { exportImage } from './export.js';
+import { exportImage, shareCurrent } from './export.js';
 
 /* ================= Render / vista previa ================= */
 const video = () => $('#vid');
@@ -14,6 +14,8 @@ const beforeCtx = () => beforeCanvas().getContext('2d');
 export const params = () => ({
   sharp: state.adj.sharp,
   noise: state.adj.noise,
+  skin: state.adj.skin,
+  fidelity: state.adj.fidelity,
   bright: state.adj.bright,
   contrast: state.adj.contrast,
   sat: state.adj.sat,
@@ -26,8 +28,8 @@ export function renderCurrent() {
   if (state.mediaType === 'video' && vid.readyState < 2) return;
   const src = state.mediaType === 'image' ? (state.aiSource || state.image) : vid;
   if (!src) return;
-  state.enhancer.render(src, params());
   const orig = state.mediaType === 'image' ? state.image : vid;
+  state.enhancer.render(src, params(), orig);
   const cb = beforeCanvas();
   const ctx = beforeCtx();
   ctx.imageSmoothingEnabled = true;
@@ -76,14 +78,19 @@ export function updateTarget() {
 }
 
 /* ================= Segmentados ================= */
-let segRes, segEng, segFmt, segPreset;
+let segRes, segEng, segModel, segFmt, segPreset;
 
-const effectiveEngine = () => state.mediaType === 'video' ? 'fast' : state.engine;
+const effectiveEngine = () => (state.mediaType === 'video' && !webCodecsSupported()) ? 'fast' : state.engine;
 
 function updatePresetHint() {
   $('#presetHint').textContent = state.preset
     ? PRESETS[state.preset].hint
     : 'Ajustes personalizados';
+}
+
+function updateModelHint() {
+  const m = AI_MODELS[state.aiModel] || AI_MODELS.nomos8k;
+  $('#modelHint').textContent = m.hint;
 }
 
 function applyPreset(key) {
@@ -101,6 +108,7 @@ export function applyEngine(v) {
   syncSliders();
   updatePresetHint();
   updateUI();
+  requestAnimationFrame(refreshAllSegmented);
   renderCurrent();
 }
 
@@ -111,9 +119,11 @@ export function setEngine(v) {
 
 /* ================= Sliders ================= */
 const SLIDERS = [
+  ['slNoise', 'noise', 'vNoise'],
+  ['slSkin', 'skin', 'vSkin'],
+  ['slFidelity', 'fidelity', 'vFidelity'],
   ['slSharp', 'sharp', 'vSharp'],
   ['slDef', 'definition', 'vDef'],
-  ['slNoise', 'noise', 'vNoise'],
   ['slBright', 'bright', 'vBright'],
   ['slContrast', 'contrast', 'vContrast'],
   ['slSat', 'sat', 'vSat']
@@ -131,27 +141,41 @@ function syncSliders() {
 /* ================= UI ================= */
 export function updateUI() {
   const img = state.mediaType === 'image';
-  segEng.dis(!img);
+  const canVideoAI = webCodecsSupported();
+  const useAI = effectiveEngine() === 'ia';
+  segEng.dis(!img && !canVideoAI);
+  $('#grpModel').hidden = !useAI;
+  updateModelHint();
+  const mLabel = (AI_MODELS[state.aiModel] || AI_MODELS.nomos8k).label;
   $('#engHint').textContent = img
     ? (state.engine === 'ia'
       ? (state.aiEP === 'webgpu'
-        ? 'IA · GPU (WebGPU)'
+        ? `IA (${mLabel}) · GPU (WebGPU) · Limpieza profunda de grano y reconstrucción facial`
         : state.aiEP === 'wasm'
-          ? 'IA · CPU (más lento)'
-          : 'Real-ESRGAN: reconstruye detalle y reduce ruido. La primera vez descarga ~5 MB + motor.')
-      : 'Escalado de alta calidad y nitidez al instante. No reconstruye detalle.')
-    : 'La IA no está disponible para video (sería demasiado lenta en el navegador).';
+          ? `IA (${mLabel}) · CPU (más lento)`
+          : `IA (${mLabel}) + Restauración de piel/rostros: elimina grano y reconstruye detalle.`)
+      : 'Escalado de alta calidad, eliminación de grano y suavizado de piel al instante.')
+    : (canVideoAI
+      ? (state.engine === 'ia'
+        ? `IA (${mLabel}) en video activada (procesa fotograma a fotograma; puede tardar varios minutos).`
+        : 'Motor rápido en video: elimina el grano y mejora rostros/bordes a alta velocidad.')
+      : 'Tu navegador no soporta WebCodecs; se usa el motor rápido para video.');
   $('#vseek').hidden = img;
   $('#vnote').hidden = img;
   $('#vnote').textContent = webCodecsSupported()
-    ? 'El video se genera fotograma a fotograma y se descarga al terminar. No hace falta reproducirlo.'
+    ? (state.engine === 'ia'
+      ? 'Cada fotograma del video se reconstruirá con IA y limpieza de grano. Mantén la pestaña abierta.'
+      : 'El video se genera fotograma a fotograma y se descarga al terminar. No hace falta reproducirlo.')
     : 'El video se procesa en tiempo real: tarda lo mismo que dura. Mantén la pestaña visible.';
   $('#qRow').style.opacity = state.format === 'png' ? .4 : 1;
   $('#slQ').disabled = state.format === 'png';
   $('#btnGo').hidden = img && state.engine !== 'ia';
-  $('#btnGo').textContent = img ? 'Mejorar con IA' : 'Mejorar video';
+  $('#btnGo').textContent = img
+    ? 'Mejorar con IA'
+    : (state.engine === 'ia' ? 'Mejorar video con IA' : 'Mejorar video');
   $('#btnDl').hidden = !img;
   $('#btnDl').className = 'btn ' + (img && state.engine !== 'ia' ? 'btn-p' : 'btn-s');
+  $('#btnShare').hidden = false;
   document.querySelectorAll('#ws input,#ws button').forEach(b => {
     if (b.id !== 'btnCancel' && b.id !== 'btnFrame') b.disabled = state.busy;
   });
@@ -168,7 +192,6 @@ function cleanup() {
   state.image = null;
   state.aiSource = null;
   state.share = null;
-  $('#btnShare').hidden = true;
   const vid = video();
   vid.pause();
   vid.removeAttribute('src');
@@ -377,6 +400,14 @@ export function initUI() {
     }
   });
   segEng = createSegmented($('#segEng'), [['ia', 'IA'], ['fast', 'Rápido']], state.engine, applyEngine);
+  segModel = createSegmented($('#segModel'),
+    [['nomos8k', 'Foto Real'], ['clear', 'Retrato'], ['esrgan', 'General']],
+    state.aiModel, v => {
+      state.aiModel = v;
+      state.aiSource = null;
+      updateUI();
+      if (state.file) renderCurrent();
+    });
   segPreset = createSegmented($('#segPreset'),
     [['natural', 'Natural'], ['claridad', 'Claridad'], ['vivido', 'Vívido']],
     state.preset, applyPreset);
@@ -417,10 +448,9 @@ export function initUI() {
     renderCurrent();
     exportImage();
   };
-  $('#btnShare').onclick = async () => {
-    if (state.share) {
-      try { await navigator.share(state.share); } catch (e) {}
-    }
+  $('#btnShare').onclick = () => {
+    renderCurrent();
+    shareCurrent();
   };
   $('#btnCancel').onclick = () => {
     state.cancelled = true;

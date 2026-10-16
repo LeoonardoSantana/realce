@@ -85,10 +85,14 @@ void main() {
 const FS_POST = `precision highp float;
 varying vec2 v;
 uniform sampler2D uTex;
+uniform sampler2D uOrigTex;
 uniform sampler2D uBlurTex;
 uniform vec2 uTexSize;
+uniform vec2 uOrigSize;
 uniform float uRadius;
 uniform float uDenoise;
+uniform float uSkin;
+uniform float uFidelity;
 uniform float uSharpen;
 uniform float uDefinition;
 uniform float uBrightness;
@@ -103,30 +107,116 @@ vec3 px(vec2 o) {
   return texture2D(uTex, v + o * uRadius / uTexSize).rgb;
 }
 
+vec3 catmullOrig(sampler2D t, vec2 uv, vec2 ts) {
+  vec2 sp = uv * ts;
+  vec2 tp = floor(sp - 0.5) + 0.5;
+  vec2 f = sp - tp;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 o12 = w2 / w12;
+  vec2 t0 = (tp - 1.0) / ts;
+  vec2 t3 = (tp + 2.0) / ts;
+  vec2 t12 = (tp + o12) / ts;
+  vec3 r = vec3(0.0);
+  r += texture2D(t, vec2(t0.x, t0.y)).rgb * w0.x * w0.y;
+  r += texture2D(t, vec2(t12.x, t0.y)).rgb * w12.x * w0.y;
+  r += texture2D(t, vec2(t3.x, t0.y)).rgb * w3.x * w0.y;
+  r += texture2D(t, vec2(t0.x, t12.y)).rgb * w0.x * w12.y;
+  r += texture2D(t, vec2(t12.x, t12.y)).rgb * w12.x * w12.y;
+  r += texture2D(t, vec2(t3.x, t12.y)).rgb * w3.x * w12.y;
+  r += texture2D(t, vec2(t0.x, t3.y)).rgb * w0.x * w3.y;
+  r += texture2D(t, vec2(t12.x, t3.y)).rgb * w12.x * w3.y;
+  r += texture2D(t, vec2(t3.x, t3.y)).rgb * w3.x * w3.y;
+  return clamp(r, 0.0, 1.0);
+}
+
+float skinMask(vec3 rgb) {
+  float y  = dot(rgb, vec3(0.299, 0.587, 0.114));
+  float cb = (rgb.b - y) * 0.564 + 0.5;
+  float cr = (rgb.r - y) * 0.713 + 0.5;
+  float dCb = (cb - 0.43) / 0.085;
+  float dCr = (cr - 0.58) / 0.095;
+  float chromaFit = exp(-0.5 * (dCb * dCb + dCr * dCr));
+  float lumaFit = smoothstep(0.08, 0.22, y) * (1.0 - smoothstep(0.88, 0.98, y));
+  return clamp(chromaFit * lumaFit, 0.0, 1.0);
+}
+
 void main() {
   vec4 bs = texture2D(uTex, v);
   vec3 base = bs.rgb;
+  if (uFidelity > 0.001) {
+    vec3 orig = catmullOrig(uOrigTex, v, uOrigSize);
+    base = mix(base, orig, uFidelity);
+  }
   vec3 c = base;
-  if (uDenoise > 0.001) {
-    vec3 sum = vec3(0.0);
-    float ws = 0.0;
+  float sk = skinMask(base);
+  float effNoise = clamp(uDenoise + uSkin * sk * 0.65, 0.0, 1.0);
+  if (effNoise > 0.001) {
+    float baseY = luma(base);
+    vec3 baseChroma = base - vec3(baseY);
+    float sumY = 0.0;
+    float wsY = 0.0;
+    vec3 sumC = vec3(0.0);
+    float wsC = 0.0;
+    float threshY = mix(0.004, 0.09, effNoise * effNoise) * (1.0 + sk * uSkin * 1.4);
+    float threshC = mix(0.02, 0.18, effNoise);
     for (int j = -2; j <= 2; j++) {
       for (int i = -2; i <= 2; i++) {
         vec2 o = vec2(float(i), float(j));
-        vec3 s = px(o);
-        float w = exp(-dot(o, o) / 4.5) * exp(-dot(s - base, s - base) / 0.02);
-        sum += s * w;
-        ws += w;
+        float dist2 = dot(o, o);
+        float wSpatial = exp(-dist2 / 6.0);
+        vec3 s = texture2D(uTex, v + o * (uRadius * (1.0 + effNoise * 0.6)) / uTexSize).rgb;
+        float sY = luma(s);
+        vec3 sC = s - vec3(sY);
+        float dY = sY - baseY;
+        float wY = wSpatial * exp(-(dY * dY) / threshY);
+        sumY += sY * wY;
+        wsY += wY;
+        float dC2 = dot(sC - baseChroma, sC - baseChroma);
+        float wC = wSpatial * exp(-dC2 / threshC);
+        sumC += sC * wC;
+        wsC += wC;
       }
     }
-    c = mix(base, sum / ws, uDenoise);
+    float cleanY = mix(baseY, sumY / max(wsY, 0.0001), effNoise);
+    vec3 cleanC = mix(baseChroma, sumC / max(wsC, 0.0001), min(1.0, effNoise * 1.25));
+    c = clamp(vec3(cleanY) + cleanC, 0.0, 1.0);
+  }
+  if (uSkin > 0.001 && sk > 0.01) {
+    vec3 lowFreq = texture2D(uBlurTex, v).rgb;
+    float lfY = luma(lowFreq);
+    float curY = luma(c);
+    float diffY = curY - lfY;
+    float detailGuard = smoothstep(0.02, 0.12, abs(diffY));
+    float smoothAmt = uSkin * sk * (1.0 - detailGuard) * 0.55;
+    float newY = mix(curY, lfY + diffY * 0.35, smoothAmt);
+    c = clamp(c + vec3(newY - curY), 0.0, 1.0);
   }
   if (uSharpen > 0.001) {
-    vec3 blur = (
-      px(vec2(-1.0, -1.0)) + 2.0 * px(vec2(0.0, -1.0)) + px(vec2(1.0, -1.0)) +
-      2.0 * px(vec2(-1.0, 0.0)) + 4.0 * c + 2.0 * px(vec2(1.0, 0.0)) +
-      px(vec2(-1.0, 1.0)) + 2.0 * px(vec2(0.0, 1.0)) + px(vec2(1.0, 1.0))) / 16.0;
-    c = c + uSharpen * (c - blur);
+    vec3 n = px(vec2(0.0, -1.0));
+    vec3 s = px(vec2(0.0, 1.0));
+    vec3 w = px(vec2(-1.0, 0.0));
+    vec3 e = px(vec2(1.0, 0.0));
+    vec3 nw = px(vec2(-1.0, -1.0));
+    vec3 ne = px(vec2(1.0, -1.0));
+    vec3 sw = px(vec2(-1.0, 1.0));
+    vec3 se = px(vec2(1.0, 1.0));
+    float lC = luma(c);
+    float lN = luma(n), lS = luma(s), lW = luma(w), lE = luma(e);
+    float lNW = luma(nw), lNE = luma(ne), lSW = luma(sw), lSE = luma(se);
+    float blurL = (lNW + 2.0 * lN + lNE + 2.0 * lW + 4.0 * lC + 2.0 * lE + lSW + 2.0 * lS + lSE) / 16.0;
+    float minL = min(lC, min(min(lN, lS), min(lW, lE)));
+    float maxL = max(lC, max(max(lN, lS), max(lW, lE)));
+    float localContrast = maxL - minL;
+    float grainGate = smoothstep(0.012, 0.055, localContrast);
+    float skinProtect = 1.0 - sk * uSkin * 0.45;
+    float edgeDetail = (lC - blurL) * uSharpen * grainGate * skinProtect;
+    float clampedDetail = edgeDetail / (1.0 + abs(edgeDetail) * 4.5);
+    float targetL = clamp(lC + clampedDetail, max(0.0, minL - 0.03), min(1.0, maxL + 0.03));
+    c = clamp(c + vec3(targetL - lC), 0.0, 1.0);
   }
   if (uDefinition > 0.001) {
     float L = luma(c);
@@ -137,7 +227,13 @@ void main() {
     c += vec3(uDefinition * 2.0 * d * m);
   }
   c = (c - 0.5) * uContrast + 0.5 + uBrightness;
-  c = mix(vec3(luma(c)), c, uSaturation);
+  float lum = luma(c);
+  float satBoost = uSaturation - 1.0;
+  float maxC = max(c.r, max(c.g, c.b));
+  float minC = min(c.r, min(c.g, c.b));
+  float curSat = maxC - minC;
+  float vibranceWeight = satBoost > 0.0 ? (1.0 - curSat * 0.65) * (1.0 - sk * 0.45) : 1.0;
+  c = mix(vec3(lum), c, 1.0 + satBoost * vibranceWeight);
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), bs.a);
 }`;
 
@@ -192,12 +288,15 @@ export class GLEnhancer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
     this.tex = makeTexture(gl);
+    this.origTex = makeTexture(gl);
     this.fboTex = makeTexture(gl);
     this.fbo = gl.createFramebuffer();
     this.max = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     this.tmp = document.createElement('canvas');
     this.srcW = 0;
     this.srcH = 0;
+    this.origW = 0;
+    this.origH = 0;
     this.smallW = 0;
     this.smallH = 0;
     this.smallTexA = null;
@@ -242,7 +341,7 @@ export class GLEnhancer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  upload(src) {
+  upload(src, tex = this.tex, isOrig = false) {
     const gl = this.gl;
     let s = src;
     let w = sourceW(src);
@@ -257,18 +356,25 @@ export class GLEnhancer {
       w = t.width;
       h = t.height;
     }
-    this.srcW = w;
-    this.srcH = h;
+    if (isOrig) {
+      this.origW = w;
+      this.origH = h;
+    } else {
+      this.srcW = w;
+      this.srcH = h;
+    }
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s);
   }
 
-  render(src, p) {
+  render(src, p, origSrc = null) {
     const gl = this.gl;
     const W = this.canvas.width;
     const H = this.canvas.height;
-    this.upload(src);
+    this.upload(src, this.tex, false);
+    const hasOrig = !!(origSrc && origSrc !== src && (p.fidelity || 0) > 0);
+    if (hasOrig) this.upload(origSrc, this.origTex, true);
     gl.useProgram(this.progScale);
     this.quad(this.progScale);
     gl.activeTexture(gl.TEXTURE0);
@@ -279,7 +385,8 @@ export class GLEnhancer {
     gl.viewport(0, 0, W, H);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const df = p.definition / 100;
-    if (df > 0) {
+    const sk = (p.skin || 0) / 100;
+    if (df > 0 || sk > 0) {
       gl.useProgram(this.progDown);
       this.quad(this.progDown);
       gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
@@ -307,12 +414,18 @@ export class GLEnhancer {
     gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.smallTexA);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, hasOrig ? this.origTex : this.tex);
     gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(this.uLoc(this.progPost, 'uTex'), 0);
     gl.uniform1i(this.uLoc(this.progPost, 'uBlurTex'), 1);
+    gl.uniform1i(this.uLoc(this.progPost, 'uOrigTex'), 2);
     gl.uniform2f(this.uLoc(this.progPost, 'uTexSize'), W, H);
+    gl.uniform2f(this.uLoc(this.progPost, 'uOrigSize'), hasOrig ? this.origW : this.srcW, hasOrig ? this.origH : this.srcH);
     gl.uniform1f(this.uLoc(this.progPost, 'uDenoise'), p.noise / 100);
-    gl.uniform1f(this.uLoc(this.progPost, 'uSharpen'), p.sharp / 100 * 1.5);
+    gl.uniform1f(this.uLoc(this.progPost, 'uSkin'), sk);
+    gl.uniform1f(this.uLoc(this.progPost, 'uFidelity'), hasOrig ? (p.fidelity || 0) / 100 : 0);
+    gl.uniform1f(this.uLoc(this.progPost, 'uSharpen'), p.sharp / 100 * 1.6);
     gl.uniform1f(this.uLoc(this.progPost, 'uDefinition'), df);
     gl.uniform1f(this.uLoc(this.progPost, 'uBrightness'), p.bright / 100);
     gl.uniform1f(this.uLoc(this.progPost, 'uContrast'), 1 + p.contrast / 100);

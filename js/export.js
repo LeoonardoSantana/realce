@@ -43,37 +43,65 @@ export function addHistory(blob, name) {
   renderHistory();
 }
 
-export function exportImage(nameOverride) {
-  const after = $('#cvAfter');
-  const finish = b => {
-    if (!b) {
-      toast('No se pudo exportar', 'err');
-      return;
+export function canvasToBlob(after = $('#cvAfter')) {
+  return new Promise(resolve => {
+    const mime = MIME[state.format];
+    const q = state.format === 'png' ? undefined : state.quality;
+    if (state.format === 'jpg') {
+      const tmp = document.createElement('canvas');
+      tmp.width = after.width;
+      tmp.height = after.height;
+      const tctx = tmp.getContext('2d');
+      tctx.fillStyle = '#fff';
+      tctx.fillRect(0, 0, tmp.width, tmp.height);
+      tctx.drawImage(after, 0, 0);
+      tmp.toBlob(resolve, mime, q);
+    } else {
+      after.toBlob(resolve, mime, q);
     }
-    const ext = state.format === 'jpg' ? 'jpg' : state.format;
-    const name = nameOverride || outputName(ext);
-    downloadBlob(b, name);
-    addHistory(b, name);
-    const file = new File([b], name, { type: MIME[state.format] });
-    state.share = (navigator.canShare && navigator.canShare({ files: [file] }))
-      ? { files: [file], title: name }
-      : null;
-    $('#btnShare').hidden = !state.share;
-    toast('Imagen descargada', 'ok');
-  };
-  const mime = MIME[state.format];
-  const q = state.format === 'png' ? undefined : state.quality;
-  if (state.format === 'jpg') {
-    const tmp = document.createElement('canvas');
-    tmp.width = after.width;
-    tmp.height = after.height;
-    const tctx = tmp.getContext('2d');
-    tctx.fillStyle = '#fff';
-    tctx.fillRect(0, 0, tmp.width, tmp.height);
-    tctx.drawImage(after, 0, 0);
-    tmp.toBlob(finish, mime, q);
+  });
+}
+
+export async function exportImage(nameOverride) {
+  const b = await canvasToBlob($('#cvAfter'));
+  if (!b) {
+    toast('No se pudo exportar', 'err');
+    return;
+  }
+  const ext = state.format === 'jpg' ? 'jpg' : state.format;
+  const name = nameOverride || outputName(ext);
+  downloadBlob(b, name);
+  addHistory(b, name);
+  const file = new File([b], name, { type: MIME[state.format] });
+  state.share = (navigator.canShare && navigator.canShare({ files: [file] }))
+    ? { files: [file], title: name }
+    : null;
+  toast('Imagen descargada', 'ok');
+}
+
+export async function shareCurrent() {
+  if (!navigator.share) {
+    toast('Tu navegador no soporta compartir archivos directamente', 'err');
+    return;
+  }
+  if (state.mediaType === 'video' && state.share) {
+    try { await navigator.share(state.share); } catch (e) {}
+    return;
+  }
+  const b = await canvasToBlob($('#cvAfter'));
+  if (!b) {
+    toast('No se pudo preparar para compartir', 'err');
+    return;
+  }
+  const ext = state.format === 'jpg' ? 'jpg' : state.format;
+  const name = outputName(ext);
+  const file = new File([b], name, { type: MIME[state.format] });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: name });
+    } catch (e) {}
   } else {
-    after.toBlob(finish, mime, q);
+    toast('Tu navegador no permite compartir este archivo; usa Descargar', 'err');
   }
 }
 

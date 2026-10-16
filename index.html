@@ -81,16 +81,24 @@
               <p class="hint" id="engHint"></p>
             </div>
 
+            <div class="group" id="grpModel">
+              <span class="glabel" id="lbModel">Modelo de IA</span>
+              <div class="seg" id="segModel" role="group" aria-labelledby="lbModel"></div>
+              <p class="hint" id="modelHint"></p>
+            </div>
+
             <div class="group">
               <span class="glabel">Ajustes</span>
               <div class="seg" id="segPreset" role="group" aria-label="Presets de ajuste"></div>
               <p class="hint" id="presetHint"></p>
-              <div class="ctl"><label for="slSharp">Nitidez</label><input type="range" id="slSharp" min="0" max="100" step="1" value="40"><span class="val" id="vSharp">40</span></div>
-              <div class="ctl"><label for="slDef">Definición</label><input type="range" id="slDef" min="0" max="100" step="1" value="0"><span class="val" id="vDef">0</span></div>
-              <div class="ctl"><label for="slNoise">Reducción de ruido</label><input type="range" id="slNoise" min="0" max="100" step="1" value="20"><span class="val" id="vNoise">20</span></div>
+              <div class="ctl"><label for="slNoise">Eliminar grano / ruido</label><input type="range" id="slNoise" min="0" max="100" step="1" value="45"><span class="val" id="vNoise">45</span></div>
+              <div class="ctl"><label for="slSkin">Restaurar piel y rostros</label><input type="range" id="slSkin" min="0" max="100" step="1" value="35"><span class="val" id="vSkin">35</span></div>
+              <div class="ctl"><label for="slFidelity">Fidelidad natural</label><input type="range" id="slFidelity" min="0" max="100" step="1" value="18"><span class="val" id="vFidelity">18</span></div>
+              <div class="ctl"><label for="slSharp">Nitidez (sin halos)</label><input type="range" id="slSharp" min="0" max="100" step="1" value="18"><span class="val" id="vSharp">18</span></div>
+              <div class="ctl"><label for="slDef">Definición</label><input type="range" id="slDef" min="0" max="100" step="1" value="15"><span class="val" id="vDef">15</span></div>
               <div class="ctl"><label for="slBright">Brillo</label><input type="range" id="slBright" min="-50" max="50" step="1" value="0"><span class="val" id="vBright">0</span></div>
-              <div class="ctl"><label for="slContrast">Contraste</label><input type="range" id="slContrast" min="-50" max="50" step="1" value="5"><span class="val" id="vContrast">5</span></div>
-              <div class="ctl"><label for="slSat">Saturación</label><input type="range" id="slSat" min="-50" max="50" step="1" value="5"><span class="val" id="vSat">5</span></div>
+              <div class="ctl"><label for="slContrast">Contraste</label><input type="range" id="slContrast" min="-50" max="50" step="1" value="4"><span class="val" id="vContrast">4</span></div>
+              <div class="ctl"><label for="slSat">Vibrancia / Color</label><input type="range" id="slSat" min="-50" max="50" step="1" value="4"><span class="val" id="vSat">4</span></div>
               <div class="btn-row"><button class="btn btn-s" id="btnReset" type="button">Restablecer</button></div>
             </div>
 
@@ -110,7 +118,7 @@
             <div class="btn-row">
               <button class="btn btn-p" id="btnGo" type="button">Mejorar</button>
               <button class="btn btn-s" id="btnDl" type="button">Descargar</button>
-              <button class="btn btn-s" id="btnShare" type="button" hidden>Compartir</button>
+              <button class="btn btn-s" id="btnShare" type="button">Compartir</button>
             </div>
           </div>
         </aside>
@@ -118,7 +126,7 @@
     </div>
   </div>
 </main>
-<footer class="foot">Procesamiento local · Tus archivos nunca salen de tu dispositivo<br><a href="models/LICENSE-Real-ESRGAN.txt">IA: Real-ESRGAN (BSD-3-Clause)</a> · <a href="vendor/LICENSE-mediabunny.txt">Video: Mediabunny (MPL-2.0)</a></footer>
+<footer class="foot">Realce v1.0 · Procesamiento local · Tus archivos nunca salen de tu dispositivo<br><a href="models/LICENSE-Real-ESRGAN.txt">IA: Real-ESRGAN (BSD-3-Clause)</a> · <a href="vendor/LICENSE-mediabunny.txt">Video: Mediabunny (MPL-2.0)</a></footer>
 <input type="file" id="file" accept="image/*,video/*" hidden>
 <video id="vid" playsinline></video>
 <div id="dropOverlay" hidden>Suelta para abrir</div>

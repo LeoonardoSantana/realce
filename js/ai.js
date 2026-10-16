@@ -1,22 +1,23 @@
 import { formatTime, showProgress, loadScript, toast } from './utils.js';
-import { state } from './state.js';
+import { state, AI_MODELS } from './state.js';
 
-/* ================= Motor IA (Real-ESRGAN + ONNX Runtime Web) ================= */
+/* ================= Motor IA (ONNX Runtime Web) ================= */
 const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 const ORT_SRI = {
   'ort.webgpu.min.js': 'sha384-XM2cMlQFAUJFJ3s2424PSr/v9zkRT4aXfi1cUz2SunZatAOwTR5GfTcIKLJIf3Ns',
   'ort.wasm.min.js': 'sha384-epp8GDQUoLKx5qHa6SoDHKv7fSHILsEYk4uEsHdPRBztXEIVWCe/lhhrQJUBMZcf'
 };
-const MODEL_URL = 'models/realesr-general-x4v3.onnx';
 const TILE = 128;
 const PAD = 12;
 const STRIDE = TILE - 2 * PAD;
 const TS = TILE * 4;
+let ortReady = null;
+const sessions = {};
 let session = null;
 
-export function loadAI() {
-  if (state.aiLoad) return state.aiLoad;
-  state.aiLoad = (async () => {
+function ensureOrt() {
+  if (ortReady) return ortReady;
+  ortReady = (async () => {
     const file = navigator.gpu ? 'ort.webgpu.min.js' : 'ort.wasm.min.js';
     await loadScript(ORT_BASE + file, ORT_SRI[file]);
     ort.env.wasm.wasmPaths = ORT_BASE;
@@ -25,33 +26,43 @@ export function loadAI() {
         ? Math.min(4, navigator.hardwareConcurrency || 1)
         : 1;
     ort.env.logLevel = 'error';
-    const providers = navigator.gpu ? ['webgpu', 'wasm'] : ['wasm'];
-    let lastError;
-    for (const ep of providers) {
-      try {
-        session = await ort.InferenceSession.create(MODEL_URL, { executionProviders: [ep], logSeverityLevel: 3 });
-        state.aiEP = ep;
-        return;
-      } catch (e) {
-        lastError = e;
-      }
-    }
-    throw lastError || new Error('session');
   })();
-  state.aiLoad.catch(() => {
-    state.aiLoad = null;
-    session = null;
-  });
-  return state.aiLoad;
+  ortReady.catch(() => { ortReady = null; });
+  return ortReady;
+}
+
+export async function loadAI(modelKey = state.aiModel) {
+  const key = AI_MODELS[modelKey] ? modelKey : 'nomos8k';
+  if (sessions[key]) {
+    session = sessions[key];
+    return session;
+  }
+  await ensureOrt();
+  const modelUrl = AI_MODELS[key].url;
+  const providers = navigator.gpu ? ['webgpu', 'wasm'] : ['wasm'];
+  let lastError;
+  for (const ep of providers) {
+    try {
+      const s = await ort.InferenceSession.create(modelUrl, { executionProviders: [ep], logSeverityLevel: 3 });
+      sessions[key] = s;
+      session = s;
+      state.aiEP = ep;
+      return s;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError || new Error('session');
 }
 
 const clampByte = v => v <= 0 ? 0 : v >= 1 ? 255 : v * 255;
 
-export async function upscaleWithAI() {
-  const ow0 = state.origW;
-  const oh0 = state.origH;
+export async function upscaleWithAI(sourceOverride = null, silentProgress = false) {
+  const srcImg = sourceOverride || state.image;
+  const ow0 = sourceOverride ? sourceOverride.width : state.origW;
+  const oh0 = sourceOverride ? sourceOverride.height : state.origH;
   const destLong = Math.max(state.target.w, state.target.h);
-  let work = state.image;
+  let work = srcImg;
   let ow = ow0;
   let oh = oh0;
   if (Math.max(ow0, oh0) > destLong) {
@@ -64,7 +75,7 @@ export async function upscaleWithAI() {
     const wctx = work.getContext('2d', { willReadFrequently: true });
     wctx.imageSmoothingEnabled = true;
     wctx.imageSmoothingQuality = 'high';
-    wctx.drawImage(state.image, 0, 0, ow, oh);
+    wctx.drawImage(srcImg, 0, 0, ow, oh);
   }
   const pixels = work.getContext('2d', { willReadFrequently: true })
     .getImageData(0, 0, ow, oh).data;
@@ -93,7 +104,7 @@ export async function upscaleWithAI() {
   const nx = Math.ceil(ow / STRIDE);
   const ny = Math.ceil(oh / STRIDE);
   const total = nx * ny;
-  if (total > 300)
+  if (!silentProgress && total > 300)
     toast(`Imagen grande: la IA puede tardar unos minutos (${total} bloques)`);
   let done = 0;
   const t0 = performance.now();
@@ -137,9 +148,11 @@ export async function upscaleWithAI() {
       const dh = Math.round((oy + ch) * 4 * k) - dy;
       octx.drawImage(tileCanvas, PAD * 4, PAD * 4, cw * 4, ch * 4, dx, dy, dw, dh);
       done++;
-      const elapsed = (performance.now() - t0) / 1000;
-      showProgress(done / total * 100,
-        `IA · ${Math.round(done / total * 100)} % · quedan ${formatTime(elapsed / done * (total - done))}`);
+      if (!silentProgress) {
+        const elapsed = (performance.now() - t0) / 1000;
+        showProgress(done / total * 100,
+          `IA · ${Math.round(done / total * 100)} % · quedan ${formatTime(elapsed / done * (total - done))}`);
+      }
       await new Promise(r => setTimeout(r));
     }
   }
