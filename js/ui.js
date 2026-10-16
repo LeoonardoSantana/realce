@@ -1,0 +1,385 @@
+import { $, toast, formatMB, formatTime, showProgress, hideProgress } from './utils.js';
+import { state, DEFAULTS, AUTO } from './state.js';
+import { createSegmented, refreshAllSegmented } from './segmented.js';
+import { resetView } from './compare.js';
+import { loadAI, upscaleWithAI } from './ai.js';
+import { processVideo } from './video.js';
+import { exportImage } from './export.js';
+
+/* ================= Render / vista previa ================= */
+const video = () => $('#vid');
+const beforeCanvas = () => $('#cvBefore');
+const beforeCtx = () => beforeCanvas().getContext('2d');
+
+const params = () => ({
+  sharp: state.adj.sharp,
+  noise: state.adj.noise,
+  bright: state.adj.bright,
+  contrast: state.adj.contrast,
+  sat: state.adj.sat,
+  definition: state.adj.definition
+});
+
+export function renderCurrent() {
+  if (!state.file || state.tooBig) return;
+  const vid = video();
+  if (state.mediaType === 'video' && vid.readyState < 2) return;
+  const src = state.mediaType === 'image' ? (state.aiSource || state.image) : vid;
+  state.enhancer.render(src, params());
+  const orig = state.mediaType === 'image' ? state.image : vid;
+  const cb = beforeCanvas();
+  const ctx = beforeCtx();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(orig, 0, 0, cb.width, cb.height);
+}
+
+let renderPending = false;
+export function scheduleRender() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(() => {
+    renderPending = false;
+    renderCurrent();
+  });
+}
+
+export function updateTarget() {
+  const box = state.resolution === '4K' ? [3840, 2160] : [2560, 1440];
+  const portrait = state.origH > state.origW;
+  const bw = portrait ? box[1] : box[0];
+  const bh = portrait ? box[0] : box[1];
+  const sc = Math.min(bw / state.origW, bh / state.origH);
+  const w = Math.max(2, Math.round(state.origW * sc / 2) * 2);
+  const h = Math.max(2, Math.round(state.origH * sc / 2) * 2);
+  state.target = { w, h };
+  state.downscaled = sc < 1;
+  state.tooBig = !!state.enhancer.max && Math.max(w, h) > state.enhancer.max;
+  if (!state.tooBig) {
+    state.enhancer.setTarget(w, h);
+    const cb = beforeCanvas();
+    const bf = Math.min(1, Math.max(w, h) / Math.max(state.origW, state.origH));
+    cb.width = Math.max(1, Math.round(state.origW * bf));
+    cb.height = Math.max(1, Math.round(state.origH * bf));
+    $('#cvAfter').style.width = w + 'px';
+    cb.style.width = w + 'px';
+    resetView();
+  }
+  $('#finfo').textContent = `${state.file.name} · ${state.origW}×${state.origH} · ${formatMB(state.file.size)}` +
+    (state.mediaType === 'video' ? ` · ${formatTime(state.duration)}` : '') + ` → ${w}×${h}`;
+  $('#resHint').textContent = state.tooBig
+    ? 'La resolución destino supera el límite de textura de tu GPU.'
+    : (state.downscaled
+      ? `El original ya supera esta resolución; se ajustará a ${w}×${h}.`
+      : `Salida: ${w}×${h} px`);
+}
+
+/* ================= Segmentados ================= */
+let segRes, segEng, segFmt;
+
+/* ================= Sliders ================= */
+const SLIDERS = [
+  ['slSharp', 'sharp', 'vSharp'],
+  ['slDef', 'definition', 'vDef'],
+  ['slNoise', 'noise', 'vNoise'],
+  ['slBright', 'bright', 'vBright'],
+  ['slContrast', 'contrast', 'vContrast'],
+  ['slSat', 'sat', 'vSat']
+];
+
+function syncSliders() {
+  SLIDERS.forEach(([id, key, valId]) => {
+    $('#' + id).value = state.adj[key];
+    $('#' + valId).textContent = state.adj[key];
+  });
+  $('#slQ').value = Math.round(state.quality * 100);
+  $('#vQ').textContent = Math.round(state.quality * 100);
+}
+
+/* ================= UI ================= */
+export function updateUI() {
+  const img = state.mediaType === 'image';
+  segEng.dis(!img);
+  $('#engHint').textContent = img
+    ? (state.engine === 'ia'
+      ? (state.aiEP === 'webgpu'
+        ? 'IA · GPU (WebGPU)'
+        : state.aiEP === 'wasm'
+          ? 'IA · CPU (más lento)'
+          : 'Real-ESRGAN: reconstruye detalle y reduce ruido. La primera vez descarga ~5 MB + motor.')
+      : 'Escalado de alta calidad y nitidez al instante. No reconstruye detalle.')
+    : 'La IA no está disponible para video (sería demasiado lenta en el navegador).';
+  $('#vseek').hidden = img;
+  $('#vnote').hidden = img;
+  $('#qRow').style.opacity = state.format === 'png' ? .4 : 1;
+  $('#slQ').disabled = state.format === 'png';
+  $('#btnGo').hidden = img && state.engine !== 'ia';
+  $('#btnGo').textContent = img ? 'Mejorar con IA' : 'Mejorar video';
+  $('#btnDl').hidden = !img;
+  $('#btnDl').className = 'btn ' + (img && state.engine !== 'ia' ? 'btn-p' : 'btn-s');
+  document.querySelectorAll('#ws input,#ws button').forEach(b => {
+    if (b.id !== 'btnCancel') b.disabled = state.busy;
+  });
+}
+
+/* ================= Entrada de archivo ================= */
+function cleanup() {
+  if (state.url) {
+    URL.revokeObjectURL(state.url);
+    state.url = null;
+  }
+  state.image = null;
+  state.aiSource = null;
+  state.share = null;
+  $('#btnShare').hidden = true;
+  const vid = video();
+  vid.pause();
+  vid.removeAttribute('src');
+  vid.load();
+}
+
+function normalizeImage(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  c.getContext('2d').drawImage(img, 0, 0);
+  return c;
+}
+
+async function fixInfiniteDuration(vid) {
+  if (isFinite(vid.duration)) return;
+  vid.currentTime = 1e101;
+  await new Promise(res => {
+    const t = setTimeout(res, 3000);
+    vid.addEventListener('durationchange', () => {
+      clearTimeout(t);
+      res();
+    }, { once: true });
+  });
+  vid.currentTime = 0;
+  await new Promise(res => {
+    const t = setTimeout(res, 3000);
+    vid.addEventListener('seeked', () => {
+      clearTimeout(t);
+      res();
+    }, { once: true });
+  });
+}
+
+async function openFile(f) {
+  if (!f) return;
+  if (state.busy) {
+    toast('Espera a que termine o cancela el proceso');
+    return;
+  }
+  const isImg = f.type.startsWith('image/');
+  const isVid = f.type.startsWith('video/');
+  if (!isImg && !isVid) {
+    toast('El archivo debe ser una imagen o un video', 'err');
+    return;
+  }
+  cleanup();
+  state.file = f;
+  state.mediaType = isImg ? 'image' : 'video';
+  state.url = URL.createObjectURL(f);
+  state.duration = 0;
+  try {
+    if (isImg) {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = state.url;
+      await img.decode();
+      state.image = normalizeImage(img);
+      state.origW = img.naturalWidth;
+      state.origH = img.naturalHeight;
+    } else {
+      const vid = video();
+      vid.src = state.url;
+      vid.muted = true;
+      await new Promise((res, rej) => {
+        vid.onloadedmetadata = res;
+        vid.onerror = () => rej(new Error('video'));
+      });
+      await fixInfiniteDuration(vid);
+      state.origW = vid.videoWidth;
+      state.origH = vid.videoHeight;
+      state.duration = vid.duration;
+      $('#seek').max = vid.duration;
+      $('#seek').value = 0;
+      $('#seekT').textContent = '0:00';
+    }
+  } catch (e) {
+    toast('No se pudo leer el archivo', 'err');
+    cleanup();
+    state.file = null;
+    return;
+  }
+  if (!state.glOK)
+    toast('WebGL no disponible: motor de reserva (sin nitidez ni reducción de ruido)', 'err');
+  $('#ws').hidden = false;
+  $('#drop').hidden = true;
+  $('#fname').textContent = f.name;
+  updateTarget();
+  updateUI();
+  if (state.tooBig) toast('La resolución destino supera el límite de tu GPU', 'err');
+  requestAnimationFrame(() => {
+    refreshAllSegmented();
+    renderCurrent();
+  });
+}
+
+function initFileInput() {
+  const drop = $('#drop');
+  const fileIn = $('#file');
+  let dragDepth = 0;
+  drop.onclick = () => fileIn.click();
+  drop.onkeydown = e => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      fileIn.click();
+    }
+  };
+  drop.addEventListener('dragenter', e => {
+    e.preventDefault();
+    dragDepth++;
+    drop.classList.add('over');
+  });
+  drop.addEventListener('dragover', e => e.preventDefault());
+  drop.addEventListener('dragleave', e => {
+    e.preventDefault();
+    if (--dragDepth <= 0) {
+      dragDepth = 0;
+      drop.classList.remove('over');
+    }
+  });
+  drop.addEventListener('drop', e => {
+    e.preventDefault();
+    dragDepth = 0;
+    drop.classList.remove('over');
+    openFile(e.dataTransfer.files[0]);
+  });
+  fileIn.onchange = () => {
+    openFile(fileIn.files[0]);
+    fileIn.value = '';
+  };
+  $('#btnChange').onclick = () => fileIn.click();
+  window.addEventListener('paste', e => {
+    const item = [...(e.clipboardData ? e.clipboardData.items : [])]
+      .find(i => i.type.startsWith('image/'));
+    if (item) {
+      const f = item.getAsFile();
+      if (f) openFile(f);
+    }
+  });
+}
+
+/* ================= Procesado de imagen ================= */
+async function processImage() {
+  if (state.engine !== 'ia') {
+    renderCurrent();
+    return;
+  }
+  const need = Math.max(state.target.w, state.target.h) / Math.max(state.origW, state.origH);
+  if (need <= 1) {
+    toast('La imagen ya supera la resolución destino; se usa el motor rápido');
+    renderCurrent();
+    return;
+  }
+  const fileRef = state.file;
+  state.busy = true;
+  state.cancelled = false;
+  updateUI();
+  showProgress(0, 'Cargando modelo de IA…');
+  try {
+    await loadAI();
+    updateUI();
+    if (state.origW * state.origH > 1.5e6)
+      toast('Imagen grande: la IA puede tardar varios minutos');
+    const out = await upscaleWithAI();
+    if (state.file !== fileRef) return;
+    state.aiSource = out;
+    renderCurrent();
+    toast('Imagen mejorada con IA', 'ok');
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      toast('Proceso cancelado');
+    } else {
+      state.engine = 'fast';
+      segEng.set('fast');
+      state.aiSource = null;
+      state.adj = { ...DEFAULTS.fast };
+      syncSliders();
+      renderCurrent();
+      toast('La IA falló; se usa el motor rápido', 'err');
+    }
+  } finally {
+    state.busy = false;
+    hideProgress();
+    updateUI();
+  }
+}
+
+export function initUI() {
+  segRes = createSegmented($('#segRes'), [['2K', '2K'], ['4K', '4K']], state.resolution, v => {
+    state.resolution = v;
+    state.aiSource = null;
+    if (state.file) {
+      updateTarget();
+      renderCurrent();
+    }
+  });
+  segEng = createSegmented($('#segEng'), [['ia', 'IA'], ['fast', 'Rápido']], state.engine, v => {
+    state.engine = v;
+    if (v === 'fast') state.aiSource = null;
+    state.adj = { ...DEFAULTS[v] };
+    syncSliders();
+    updateUI();
+    renderCurrent();
+  });
+  segFmt = createSegmented($('#segFmt'), [['png', 'PNG'], ['jpg', 'JPG'], ['webp', 'WebP']],
+    state.format, v => {
+      state.format = v;
+      updateUI();
+    });
+  SLIDERS.forEach(([id, key, valId]) =>
+    $('#' + id).addEventListener('input', e => {
+      state.adj[key] = +e.target.value;
+      $('#' + valId).textContent = e.target.value;
+      scheduleRender();
+    }));
+  $('#slQ').addEventListener('input', e => {
+    state.quality = +e.target.value / 100;
+    $('#vQ').textContent = e.target.value;
+  });
+  $('#btnAuto').onclick = () => {
+    state.adj = { ...AUTO[state.engine] };
+    syncSliders();
+    scheduleRender();
+  };
+  $('#btnReset').onclick = () => {
+    state.adj = { ...DEFAULTS[state.engine] };
+    syncSliders();
+    scheduleRender();
+  };
+  $('#btnGo').onclick = () => {
+    if (state.busy || state.tooBig) return;
+    if (state.mediaType === 'video') processVideo();
+    else processImage();
+  };
+  $('#btnDl').onclick = () => {
+    renderCurrent();
+    exportImage();
+  };
+  $('#btnShare').onclick = async () => {
+    if (state.share) {
+      try { await navigator.share(state.share); } catch (e) {}
+    }
+  };
+  $('#btnCancel').onclick = () => {
+    state.cancelled = true;
+  };
+  window.addEventListener('resize', refreshAllSegmented);
+  initFileInput();
+  syncSliders();
+  updateUI();
+}

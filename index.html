@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Realce">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f5f7">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<link rel="stylesheet" href="css/styles.css">
+<title>Realce — Mejora imágenes y videos a 2K y 4K</title>
+</head>
+<body>
+<header class="nav"><div class="nav-in">
+  <svg viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a84ff"/><stop offset="1" stop-color="#5e5ce6"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="url(#lg)"/><rect x="92" y="160" width="240" height="200" rx="30" fill="none" stroke="#fff" stroke-width="26"/><path d="M150 320l52-60 40 44 30-30 48 46" fill="none" stroke="#fff" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/><circle cx="262" cy="212" r="16" fill="#fff"/><path d="M396 92c10 46 40 76 86 86-46 10-76 40-86 86-10-46-40-76-86-86 46-10 76-40 86-86z" fill="#fff"/></svg>
+  <span class="name">Realce</span>
+</div></header>
+<main>
+  <section class="hero">
+    <h1>Realce</h1>
+    <p>Mejora imágenes y videos a 2K y 4K. Todo en tu dispositivo.</p>
+  </section>
+  <div class="wrap">
+    <div id="drop" class="drop" role="button" tabindex="0" aria-label="Elegir una imagen o un video">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V5m0 0l-4 4m4-4l4 4"/><path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3"/></svg>
+      <p class="t1">Arrastra una imagen o video, o toca para elegir</p>
+      <p class="t2">También puedes pegar una imagen desde el portapapeles</p>
+    </div>
+
+    <div id="ws" hidden>
+      <div class="grid">
+        <section>
+          <div class="zbar"><div class="seg sm" id="segZoom" role="group" aria-label="Zoom del comparador"></div></div>
+          <div class="compare card" id="cmp" tabindex="0" role="slider" aria-label="Comparador antes y después" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+            <div class="layer"><div class="stage" id="stA"><canvas id="cvAfter"></canvas></div></div>
+            <div class="layer lbefore" id="lBefore"><div class="stage" id="stB"><canvas id="cvBefore"></canvas></div></div>
+            <div class="divider" id="divi"><span class="dline"></span><span class="handle"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l-4 6 4 6M15 6l4 6-4 6"/></svg></span></div>
+            <span class="tag l">Antes</span><span class="tag r">Después</span>
+          </div>
+          <p class="info" id="finfo"></p>
+
+          <div id="vseek" class="card mt" hidden>
+            <div class="ctl"><label for="seek">Fotograma</label><input type="range" id="seek" min="0" step="0.01" value="0"><span class="val" id="seekT">0:00</span></div>
+            <button class="btn btn-s w100" id="btnFrame" type="button">Capturar fotograma mejorado</button>
+          </div>
+
+          <div id="hwrap" hidden>
+            <div class="hist-head"><span>Historial</span><button class="link" id="btnClearH" type="button">Borrar historial</button></div>
+            <div class="hist" id="hist"></div>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <div class="card">
+            <div class="frow">
+              <div class="fname" id="fname"></div>
+              <button class="btn btn-s sm" id="btnChange" type="button">Cambiar</button>
+            </div>
+
+            <div class="group">
+              <span class="glabel" id="lbRes">Resolución</span>
+              <div class="seg" id="segRes" role="group" aria-labelledby="lbRes"></div>
+              <p class="hint" id="resHint"></p>
+            </div>
+
+            <div class="group">
+              <span class="glabel" id="lbEng">Motor</span>
+              <div class="seg" id="segEng" role="group" aria-labelledby="lbEng"></div>
+              <p class="hint" id="engHint"></p>
+            </div>
+
+            <div class="group">
+              <span class="glabel">Ajustes</span>
+              <div class="ctl"><label for="slSharp">Nitidez</label><input type="range" id="slSharp" min="0" max="100" step="1" value="40"><span class="val" id="vSharp">40</span></div>
+              <div class="ctl"><label for="slDef">Definición</label><input type="range" id="slDef" min="0" max="100" step="1" value="0"><span class="val" id="vDef">0</span></div>
+              <div class="ctl"><label for="slNoise">Reducción de ruido</label><input type="range" id="slNoise" min="0" max="100" step="1" value="20"><span class="val" id="vNoise">20</span></div>
+              <div class="ctl"><label for="slBright">Brillo</label><input type="range" id="slBright" min="-50" max="50" step="1" value="0"><span class="val" id="vBright">0</span></div>
+              <div class="ctl"><label for="slContrast">Contraste</label><input type="range" id="slContrast" min="-50" max="50" step="1" value="5"><span class="val" id="vContrast">5</span></div>
+              <div class="ctl"><label for="slSat">Saturación</label><input type="range" id="slSat" min="-50" max="50" step="1" value="5"><span class="val" id="vSat">5</span></div>
+              <div class="btn-row"><button class="btn btn-s" id="btnAuto" type="button">Auto</button><button class="btn btn-s" id="btnReset" type="button">Restablecer</button></div>
+            </div>
+
+            <div class="group">
+              <span class="glabel" id="lbFmt">Formato de exportación</span>
+              <div class="seg" id="segFmt" role="group" aria-labelledby="lbFmt"></div>
+              <div class="ctl" id="qRow"><label for="slQ">Calidad</label><input type="range" id="slQ" min="70" max="100" step="1" value="90"><span class="val" id="vQ">90</span></div>
+            </div>
+
+            <div class="note" id="vnote" hidden>El video se procesa en tiempo real: tarda lo mismo que dura. Mantén la pestaña visible.</div>
+
+            <div id="progWrap" hidden>
+              <div class="prog" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progTrack"><i id="progBar"></i></div>
+              <div class="prog-row"><span id="progTxt"></span><button class="btn btn-s sm" id="btnCancel" type="button">Cancelar</button></div>
+            </div>
+
+            <div class="btn-row">
+              <button class="btn btn-p" id="btnGo" type="button">Mejorar</button>
+              <button class="btn btn-s" id="btnDl" type="button">Descargar</button>
+              <button class="btn btn-s" id="btnShare" type="button" hidden>Compartir</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+</main>
+<footer class="foot">Procesamiento local · Tus archivos nunca salen de tu dispositivo<br><a href="models/LICENSE-Real-ESRGAN.txt">IA: Real-ESRGAN (BSD-3-Clause)</a></footer>
+<input type="file" id="file" accept="image/*,video/*" hidden>
+<video id="vid" playsinline></video>
+<div id="toasts" aria-live="polite"></div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
