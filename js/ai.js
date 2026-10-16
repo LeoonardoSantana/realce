@@ -31,15 +31,15 @@ function ensureOrt() {
   return ortReady;
 }
 
-export async function loadAI(modelKey = state.aiModel) {
+export async function loadAI(modelKey = state.aiModel, forceEP = null) {
   const key = AI_MODELS[modelKey] ? modelKey : 'nomos8k';
-  if (sessions[key]) {
+  if (!forceEP && sessions[key]) {
     session = sessions[key];
     return session;
   }
   await ensureOrt();
   const modelUrl = AI_MODELS[key].url;
-  const providers = navigator.gpu ? ['webgpu', 'wasm'] : ['wasm'];
+  const providers = forceEP ? [forceEP] : (navigator.gpu ? ['webgpu', 'wasm'] : ['wasm']);
   let lastError;
   for (const ep of providers) {
     try {
@@ -53,6 +53,21 @@ export async function loadAI(modelKey = state.aiModel) {
     }
   }
   throw lastError || new Error('session');
+}
+
+async function runTile(input) {
+  const makeFeeds = () => ({
+    [session.inputNames[0]]: new ort.Tensor('float32', input, [1, 3, TILE, TILE])
+  });
+  try {
+    return await session.run(makeFeeds());
+  } catch (e) {
+    if (state.aiEP === 'webgpu') {
+      await loadAI(state.aiModel, 'wasm');
+      return await session.run(makeFeeds());
+    }
+    throw e;
+  }
 }
 
 const clampByte = v => v <= 0 ? 0 : v >= 1 ? 255 : v * 255;
@@ -99,8 +114,6 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
   const tileData = tctx.createImageData(TS, TS);
   const td = tileData.data;
   const input = new Float32Array(3 * TILE * TILE);
-  const inputName = session.inputNames[0];
-  const outputName = session.outputNames[0];
   const nx = Math.ceil(ow / STRIDE);
   const ny = Math.ceil(oh / STRIDE);
   const total = nx * ny;
@@ -125,10 +138,8 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
           }
         }
       }
-      const feeds = {};
-      feeds[inputName] = new ort.Tensor('float32', input, [1, 3, TILE, TILE]);
-      const res = await session.run(feeds);
-      const d = res[outputName].data;
+      const res = await runTile(input);
+      const d = res[session.outputNames[0]].data;
       const plane = TS * TS;
       for (let y = 0; y < TS; y++) {
         for (let x = 0; x < TS; x++) {
