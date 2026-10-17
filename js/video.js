@@ -109,6 +109,7 @@ async function processVideoWebCodecs() {
     state.share = (navigator.canShare && navigator.canShare({ files: [sharedFile] }))
       ? { files: [sharedFile], title: name }
       : null;
+    updateUI();
     toast('Video mejorado descargado', 'ok');
   } catch (e) {
     const mb = await import('../vendor/mediabunny-1.61.3.min.mjs').catch(() => null);
@@ -166,7 +167,7 @@ async function processVideoRecorder() {
   try {
     rec = new MediaRecorder(stream, {
       mimeType: mime || undefined,
-      videoBitsPerSecond: state.resolution === '4K' ? 40000000 : 20000000
+      videoBitsPerSecond: state.resolution === '4K' ? 40000000 : (state.resolution === '2K' ? 20000000 : 12000000)
     });
   } catch (e) {
     state.busy = false;

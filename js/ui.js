@@ -47,8 +47,14 @@ export function scheduleRender() {
   });
 }
 
+const RES_BOX = {
+  '1080p': [1920, 1080],
+  '2K': [2560, 1440],
+  '4K': [3840, 2160]
+};
+
 export function updateTarget() {
-  const box = state.resolution === '4K' ? [3840, 2160] : [2560, 1440];
+  const box = RES_BOX[state.resolution] || RES_BOX['2K'];
   const portrait = state.origH > state.origW;
   const bw = portrait ? box[1] : box[0];
   const bh = portrait ? box[0] : box[1];
@@ -57,6 +63,7 @@ export function updateTarget() {
   const h = Math.max(2, Math.round(state.origH * sc / 2) * 2);
   state.target = { w, h };
   state.downscaled = sc < 1;
+  state.sameRes = Math.abs(sc - 1) < 0.02;
   state.tooBig = !!state.enhancer.max && Math.max(w, h) > state.enhancer.max;
   if (!state.tooBig) {
     state.enhancer.setTarget(w, h);
@@ -72,9 +79,11 @@ export function updateTarget() {
     (state.mediaType === 'video' ? ` · ${formatTime(state.duration)}` : '') + ` → ${w}×${h}`;
   $('#resHint').textContent = state.tooBig
     ? 'La resolución destino supera el límite de textura de tu GPU.'
-    : (state.downscaled
-      ? `El original ya supera esta resolución; la IA lo limpiará y reconstruirá el detalle a ${w}×${h}.`
-      : `Salida: ${w}×${h} px`);
+    : (state.sameRes
+      ? `Misma resolución (${w}×${h}): limpia grano y restaura rostros/detalle sin perder calidad.`
+      : (state.downscaled
+        ? `Reducido de ${state.origW}×${state.origH} a ${w}×${h} con limpieza de grano y reconstrucción IA.`
+        : `Escalado a ${w}×${h} px` + (state.mediaType === 'video' && state.resolution === '1080p' ? ' (óptimo para video rápido con IA)' : '')));
 }
 
 /* ================= Segmentados ================= */
@@ -175,7 +184,7 @@ export function updateUI() {
     : (state.engine === 'ia' ? 'Mejorar video con IA' : 'Mejorar video');
   $('#btnDl').hidden = !img;
   $('#btnDl').className = 'btn ' + (img && state.engine !== 'ia' ? 'btn-p' : 'btn-s');
-  $('#btnShare').hidden = false;
+  $('#btnShare').hidden = !img && !state.share;
   document.querySelectorAll('#ws input,#ws button').forEach(b => {
     if (b.id !== 'btnCancel' && b.id !== 'btnFrame') b.disabled = state.busy;
   });
@@ -276,6 +285,20 @@ export async function openFile(f) {
   }
   if (!state.glOK)
     toast('WebGL no disponible: motor de reserva (sin nitidez ni reducción de ruido)', 'err');
+  const origLong = Math.max(state.origW, state.origH);
+  if (isVid) {
+    // En video, 1080p por defecto da la mejor relación velocidad/calidad con IA; si el video ya supera 1080p, mantenemos su rango (2K o 4K) para no bajarle resolución.
+    const autoRes = origLong > 2560 ? '4K' : (origLong > 1920 ? '2K' : '1080p');
+    state.resolution = autoRes;
+    if (segRes) segRes.set(autoRes);
+  } else if (origLong > 2560 && state.resolution !== '4K') {
+    // Si la imagen ya supera 2K, subimos a 4K para conservar su resolución nativa al restaurar.
+    state.resolution = '4K';
+    if (segRes) segRes.set('4K');
+  } else if (origLong > 1920 && state.resolution === '1080p') {
+    state.resolution = '2K';
+    if (segRes) segRes.set('2K');
+  }
   $('#ws').hidden = false;
   $('#drop').hidden = true;
   $('#fname').textContent = f.name;
@@ -391,7 +414,7 @@ async function processImage() {
 }
 
 export function initUI() {
-  segRes = createSegmented($('#segRes'), [['2K', '2K'], ['4K', '4K']], state.resolution, v => {
+  segRes = createSegmented($('#segRes'), [['1080p', '1080p'], ['2K', '2K'], ['4K', '4K']], state.resolution, v => {
     state.resolution = v;
     state.aiSource = null;
     if (state.file) {

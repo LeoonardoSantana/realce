@@ -147,8 +147,9 @@ float skinMask(vec3 rgb) {
 void main() {
   vec4 bs = texture2D(uTex, v);
   vec3 base = bs.rgb;
+  vec3 orig = base;
   if (uFidelity > 0.001) {
-    vec3 orig = catmullOrig(uOrigTex, v, uOrigSize);
+    orig = catmullOrig(uOrigTex, v, uOrigSize);
     base = mix(base, orig, uFidelity);
   }
   vec3 c = base;
@@ -168,7 +169,11 @@ void main() {
         vec2 o = vec2(float(i), float(j));
         float dist2 = dot(o, o);
         float wSpatial = exp(-dist2 / 6.0);
-        vec3 s = texture2D(uTex, v + o * (uRadius * (1.0 + effNoise * 0.6)) / uTexSize).rgb;
+        vec2 uvO = v + o * (uRadius * (1.0 + effNoise * 0.6)) / uTexSize;
+        vec3 s = texture2D(uTex, uvO).rgb;
+        if (uFidelity > 0.001) {
+          s = mix(s, texture2D(uOrigTex, uvO).rgb, uFidelity);
+        }
         float sY = luma(s);
         vec3 sC = s - vec3(sY);
         float dY = sY - baseY;

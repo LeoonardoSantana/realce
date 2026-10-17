@@ -84,7 +84,11 @@ export async function shareCurrent() {
     toast('Tu navegador no soporta compartir archivos directamente', 'err');
     return;
   }
-  if (state.mediaType === 'video' && state.share) {
+  if (state.mediaType === 'video') {
+    if (!state.share) {
+      toast('Primero procesa el video para poder compartirlo');
+      return;
+    }
     try { await navigator.share(state.share); } catch (e) {}
     return;
   }

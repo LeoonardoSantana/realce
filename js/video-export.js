@@ -16,7 +16,7 @@ export async function exportVideoWebCodecs({ file, width, height, render, onProg
       forceTranscode: true,
       allowTransformationMetadata: false,
       quality: new mb.Quality({
-        bitrate: width * height >= 3840 * 2160 * 0.9 ? 40e6 : 20e6
+        bitrate: width * height >= 3840 * 2160 * 0.9 ? 40e6 : (width * height >= 2560 * 1440 * 0.9 ? 20e6 : 12e6)
       }),
       processedWidth: width,
       processedHeight: height,

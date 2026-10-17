@@ -72,21 +72,46 @@ async function runTile(input) {
 
 const clampByte = v => v <= 0 ? 0 : v >= 1 ? 255 : v * 255;
 
+const yieldTick = () => new Promise(resolve => {
+  const ch = new MessageChannel();
+  ch.port1.onmessage = resolve;
+  ch.port2.postMessage(null);
+});
+
+let sharedWork = null;
+let sharedOut = null;
+let sharedTile = null;
+let sharedTileCtx = null;
+let sharedTileData = null;
+let sharedInput = null;
+
 export async function upscaleWithAI(sourceOverride = null, silentProgress = false) {
+  const isVideoFrame = !!sourceOverride;
   const srcImg = sourceOverride || state.image;
-  const ow0 = sourceOverride ? sourceOverride.width : state.origW;
-  const oh0 = sourceOverride ? sourceOverride.height : state.origH;
+  const ow0 = isVideoFrame ? sourceOverride.width : state.origW;
+  const oh0 = isVideoFrame ? sourceOverride.height : state.origH;
   const destLong = Math.max(state.target.w, state.target.h);
+  const srcLong = Math.max(ow0, oh0);
+  // Los modelos son redes 4x:
+  // - En video: alimentamos a destLong/4 exacto (ej. 480x270 -> 1080p, 640x360 -> 2K) para que 4x dé la resolución final en segundos.
+  // - En imagen: si ya alcanza o supera la salida (o si 4x excede destLong), limitamos la base a destLong/2 (máx 1280px) para limpiar grano y reconstruir detalle sin generar 8K-16K innecesarios.
+  const maxInputLong = isVideoFrame
+    ? Math.max(160, Math.round(destLong / 4))
+    : (srcLong >= destLong
+      ? Math.min(1280, Math.max(320, Math.round(destLong / 2)))
+      : Math.min(srcLong, Math.max(320, Math.round(destLong / 2))));
   let work = srcImg;
   let ow = ow0;
   let oh = oh0;
-  if (Math.max(ow0, oh0) > destLong) {
-    const f = destLong / Math.max(ow0, oh0);
+  if (srcLong > maxInputLong) {
+    const f = maxInputLong / srcLong;
     ow = Math.max(1, Math.round(ow0 * f));
     oh = Math.max(1, Math.round(oh0 * f));
-    work = document.createElement('canvas');
-    work.width = ow;
-    work.height = oh;
+    work = sharedWork || (sharedWork = document.createElement('canvas'));
+    if (work.width !== ow || work.height !== oh) {
+      work.width = ow;
+      work.height = oh;
+    }
     const wctx = work.getContext('2d', { willReadFrequently: true });
     wctx.imageSmoothingEnabled = true;
     wctx.imageSmoothingQuality = 'high';
@@ -95,25 +120,39 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
   const pixels = work.getContext('2d', { willReadFrequently: true })
     .getImageData(0, 0, ow, oh).data;
   let hasAlpha = false;
-  for (let i = 3; i < pixels.length; i += 4) {
-    if (pixels[i] < 255) {
-      hasAlpha = true;
-      break;
+  if (!isVideoFrame) {
+    for (let i = 3; i < pixels.length; i += 4) {
+      if (pixels[i] < 255) {
+        hasAlpha = true;
+        break;
+      }
     }
   }
-  const k = Math.min(1, destLong / (4 * Math.max(ow0, oh0)));
-  const out = document.createElement('canvas');
-  out.width = Math.round(4 * ow0 * k);
-  out.height = Math.round(4 * oh0 * k);
+  const k = Math.min(1, destLong / (4 * Math.max(ow, oh)));
+  const outW = Math.max(1, Math.round(4 * ow * k));
+  const outH = Math.max(1, Math.round(4 * oh * k));
+  const out = isVideoFrame
+    ? (sharedOut || (sharedOut = document.createElement('canvas')))
+    : document.createElement('canvas');
+  if (out.width !== outW || out.height !== outH) {
+    out.width = outW;
+    out.height = outH;
+  }
   const octx = out.getContext('2d');
   octx.imageSmoothingEnabled = true;
   octx.imageSmoothingQuality = 'high';
-  const tileCanvas = document.createElement('canvas');
-  tileCanvas.width = tileCanvas.height = TS;
-  const tctx = tileCanvas.getContext('2d');
-  const tileData = tctx.createImageData(TS, TS);
+  if (!sharedTile) {
+    sharedTile = document.createElement('canvas');
+    sharedTile.width = sharedTile.height = TS;
+    sharedTileCtx = sharedTile.getContext('2d');
+    sharedTileData = sharedTileCtx.createImageData(TS, TS);
+    sharedInput = new Float32Array(3 * TILE * TILE);
+  }
+  const tileCanvas = sharedTile;
+  const tctx = sharedTileCtx;
+  const tileData = sharedTileData;
   const td = tileData.data;
-  const input = new Float32Array(3 * TILE * TILE);
+  const input = sharedInput;
   const nx = Math.ceil(ow / STRIDE);
   const ny = Math.ceil(oh / STRIDE);
   const total = nx * ny;
@@ -121,6 +160,7 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
     toast(`Imagen grande: la IA puede tardar unos minutos (${total} bloques)`);
   let done = 0;
   const t0 = performance.now();
+  let lastYield = t0;
   for (let ty = 0; ty < ny; ty++) {
     for (let tx = 0; tx < nx; tx++) {
       if (state.cancelled)
@@ -139,7 +179,8 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
         }
       }
       const res = await runTile(input);
-      const d = res[session.outputNames[0]].data;
+      const outTensor = res[session.outputNames[0]];
+      const d = outTensor.data;
       const plane = TS * TS;
       for (let y = 0; y < TS; y++) {
         for (let x = 0; x < TS; x++) {
@@ -150,6 +191,7 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
           td[i + 3] = 255;
         }
       }
+      if (typeof outTensor.dispose === 'function') outTensor.dispose();
       tctx.putImageData(tileData, 0, 0);
       const cw = Math.min(STRIDE, ow - ox);
       const ch = Math.min(STRIDE, oh - oy);
@@ -159,12 +201,16 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
       const dh = Math.round((oy + ch) * 4 * k) - dy;
       octx.drawImage(tileCanvas, PAD * 4, PAD * 4, cw * 4, ch * 4, dx, dy, dw, dh);
       done++;
+      const now = performance.now();
       if (!silentProgress) {
-        const elapsed = (performance.now() - t0) / 1000;
+        const elapsed = (now - t0) / 1000;
         showProgress(done / total * 100,
           `IA · ${Math.round(done / total * 100)} % · quedan ${formatTime(elapsed / done * (total - done))}`);
       }
-      await new Promise(r => setTimeout(r));
+      if (now - lastYield > 32) {
+        await yieldTick();
+        lastYield = performance.now();
+      }
     }
   }
   if (hasAlpha) {
