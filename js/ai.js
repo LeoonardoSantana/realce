@@ -21,6 +21,7 @@ function ensureOrt() {
     const file = navigator.gpu ? 'ort.webgpu.min.js' : 'ort.wasm.min.js';
     await loadScript(ORT_BASE + file, ORT_SRI[file]);
     ort.env.wasm.wasmPaths = ORT_BASE;
+    ort.env.wasm.simd = true;
     ort.env.wasm.numThreads =
       (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated)
         ? Math.min(4, navigator.hardwareConcurrency || 1)
@@ -43,10 +44,17 @@ export async function loadAI(modelKey = state.aiModel, forceEP = null) {
   let lastError;
   for (const ep of providers) {
     try {
-      const s = await ort.InferenceSession.create(modelUrl, { executionProviders: [ep], logSeverityLevel: 3 });
+      const s = await ort.InferenceSession.create(modelUrl, {
+        executionProviders: [ep],
+        graphOptimizationLevel: 'all',
+        enableCpuMemArena: true,
+        enableMemPattern: true,
+        logSeverityLevel: 3
+      });
       sessions[key] = s;
       session = s;
       state.aiEP = ep;
+      resetVideoFrameCache();
       return s;
     } catch (e) {
       lastError = e;
@@ -56,21 +64,32 @@ export async function loadAI(modelKey = state.aiModel, forceEP = null) {
 }
 
 async function runTile(input) {
-  const makeFeeds = () => ({
-    [session.inputNames[0]]: new ort.Tensor('float32', input, [1, 3, TILE, TILE])
-  });
+  const runOnce = async () => {
+    const inTensor = new ort.Tensor('float32', input, [1, 3, TILE, TILE]);
+    try {
+      return await session.run({ [session.inputNames[0]]: inTensor });
+    } finally {
+      if (typeof inTensor.dispose === 'function') {
+        try { inTensor.dispose(); } catch (e) {}
+      }
+    }
+  };
   try {
-    return await session.run(makeFeeds());
+    return await runOnce();
   } catch (e) {
     if (state.aiEP === 'webgpu') {
       await loadAI(state.aiModel, 'wasm');
-      return await session.run(makeFeeds());
+      return await runOnce();
     }
     throw e;
   }
 }
 
-const clampByte = v => v <= 0 ? 0 : v >= 1 ? 255 : v * 255;
+const INV255 = (() => {
+  const t = new Float32Array(256);
+  for (let i = 0; i < 256; i++) t[i] = i / 255;
+  return t;
+})();
 
 const yieldTick = () => new Promise(resolve => {
   const ch = new MessageChannel();
@@ -84,6 +103,44 @@ let sharedTile = null;
 let sharedTileCtx = null;
 let sharedTileData = null;
 let sharedInput = null;
+let sharedSxLut = null;
+
+// Caché sin pérdida para fotogramas y bloques (tiles) idénticos en video
+let prevFramePixelsU32 = null;
+let prevFrameW = 0;
+let prevFrameH = 0;
+let prevFrameOutW = 0;
+let prevFrameOutH = 0;
+let prevFrameModel = null;
+
+export function resetVideoFrameCache() {
+  prevFramePixelsU32 = null;
+  prevFrameW = 0;
+  prevFrameH = 0;
+  prevFrameOutW = 0;
+  prevFrameOutH = 0;
+  prevFrameModel = null;
+}
+
+function sameUint32Buffer(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0, len = a.length; i < len; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function isTileUnchanged(curU32, prevU32, ow, oh, ox, oy, sxLut) {
+  for (let y = 0; y < TILE; y++) {
+    const sy = Math.min(oh - 1, Math.max(0, oy - PAD + y));
+    const row = sy * ow;
+    for (let x = 0; x < TILE; x++) {
+      const idx = row + sxLut[x];
+      if (curU32[idx] !== prevU32[idx]) return false;
+    }
+  }
+  return true;
+}
 
 export async function upscaleWithAI(sourceOverride = null, silentProgress = false) {
   const isVideoFrame = !!sourceOverride;
@@ -119,6 +176,7 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
   }
   const pixels = work.getContext('2d', { willReadFrequently: true })
     .getImageData(0, 0, ow, oh).data;
+  const curU32 = new Uint32Array(pixels.buffer, pixels.byteOffset, ow * oh);
   let hasAlpha = false;
   if (!isVideoFrame) {
     for (let i = 3; i < pixels.length; i += 4) {
@@ -134,10 +192,24 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
   const out = isVideoFrame
     ? (sharedOut || (sharedOut = document.createElement('canvas')))
     : document.createElement('canvas');
-  if (out.width !== outW || out.height !== outH) {
+  const sizeChanged = out.width !== outW || out.height !== outH;
+  if (sizeChanged) {
     out.width = outW;
     out.height = outH;
   }
+  const canUsePrevFrame = isVideoFrame &&
+    !sizeChanged &&
+    prevFramePixelsU32 &&
+    prevFrameW === ow &&
+    prevFrameH === oh &&
+    prevFrameOutW === outW &&
+    prevFrameOutH === outH &&
+    prevFrameModel === state.aiModel;
+  if (canUsePrevFrame && sameUint32Buffer(curU32, prevFramePixelsU32)) {
+    out.__unchanged = true;
+    return out;
+  }
+  out.__unchanged = false;
   const octx = out.getContext('2d');
   octx.imageSmoothingEnabled = true;
   octx.imageSmoothingQuality = 'high';
@@ -146,19 +218,28 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
     sharedTile.width = sharedTile.height = TS;
     sharedTileCtx = sharedTile.getContext('2d');
     sharedTileData = sharedTileCtx.createImageData(TS, TS);
+    const alphaInit = sharedTileData.data;
+    for (let i = 3; i < alphaInit.length; i += 4) alphaInit[i] = 255;
     sharedInput = new Float32Array(3 * TILE * TILE);
+    sharedSxLut = new Int32Array(TILE);
   }
   const tileCanvas = sharedTile;
   const tctx = sharedTileCtx;
   const tileData = sharedTileData;
   const td = tileData.data;
   const input = sharedInput;
+  const sxLut = sharedSxLut;
+  const planeIn = TILE * TILE;
+  const planeIn2 = planeIn * 2;
+  const planeOut = TS * TS;
+  const planeOut2 = planeOut * 2;
   const nx = Math.ceil(ow / STRIDE);
   const ny = Math.ceil(oh / STRIDE);
   const total = nx * ny;
   if (!silentProgress && total > 300)
     toast(`Imagen grande: la IA puede tardar unos minutos (${total} bloques)`);
   let done = 0;
+  const yieldInterval = silentProgress ? 120 : 32;
   const t0 = performance.now();
   let lastYield = t0;
   for (let ty = 0; ty < ny; ty++) {
@@ -167,29 +248,32 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
         throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
       const ox = tx * STRIDE;
       const oy = ty * STRIDE;
-      for (let c = 0; c < 3; c++) {
-        const off = c * TILE * TILE;
-        for (let y = 0; y < TILE; y++) {
-          const sy = Math.min(oh - 1, Math.max(0, oy - PAD + y));
-          const row = sy * ow;
-          for (let x = 0; x < TILE; x++) {
-            const sx = Math.min(ow - 1, Math.max(0, ox - PAD + x));
-            input[off + y * TILE + x] = pixels[(row + sx) * 4 + c] / 255;
-          }
+      for (let x = 0; x < TILE; x++) {
+        sxLut[x] = Math.min(ow - 1, Math.max(0, ox - PAD + x));
+      }
+      if (canUsePrevFrame && isTileUnchanged(curU32, prevFramePixelsU32, ow, oh, ox, oy, sxLut)) {
+        done++;
+        continue;
+      }
+      for (let y = 0; y < TILE; y++) {
+        const sy = Math.min(oh - 1, Math.max(0, oy - PAD + y));
+        const row = sy * ow;
+        const yOff = y * TILE;
+        for (let x = 0; x < TILE; x++) {
+          const pOff = (row + sxLut[x]) * 4;
+          const idx = yOff + x;
+          input[idx] = INV255[pixels[pOff]];
+          input[planeIn + idx] = INV255[pixels[pOff + 1]];
+          input[planeIn2 + idx] = INV255[pixels[pOff + 2]];
         }
       }
       const res = await runTile(input);
       const outTensor = res[session.outputNames[0]];
       const d = outTensor.data;
-      const plane = TS * TS;
-      for (let y = 0; y < TS; y++) {
-        for (let x = 0; x < TS; x++) {
-          const i = (y * TS + x) * 4;
-          td[i] = clampByte(d[y * TS + x]);
-          td[i + 1] = clampByte(d[plane + y * TS + x]);
-          td[i + 2] = clampByte(d[2 * plane + y * TS + x]);
-          td[i + 3] = 255;
-        }
+      for (let p = 0, i = 0; p < planeOut; p++, i += 4) {
+        td[i] = d[p] * 255;
+        td[i + 1] = d[planeOut + p] * 255;
+        td[i + 2] = d[planeOut2 + p] * 255;
       }
       if (typeof outTensor.dispose === 'function') outTensor.dispose();
       tctx.putImageData(tileData, 0, 0);
@@ -207,11 +291,22 @@ export async function upscaleWithAI(sourceOverride = null, silentProgress = fals
         showProgress(done / total * 100,
           `IA · ${Math.round(done / total * 100)} % · quedan ${formatTime(elapsed / done * (total - done))}`);
       }
-      if (now - lastYield > 32) {
+      if (now - lastYield > yieldInterval) {
         await yieldTick();
         lastYield = performance.now();
       }
     }
+  }
+  if (isVideoFrame) {
+    if (!prevFramePixelsU32 || prevFramePixelsU32.length !== curU32.length) {
+      prevFramePixelsU32 = new Uint32Array(curU32.length);
+    }
+    prevFramePixelsU32.set(curU32);
+    prevFrameW = ow;
+    prevFrameH = oh;
+    prevFrameOutW = outW;
+    prevFrameOutH = outH;
+    prevFrameModel = state.aiModel;
   }
   if (hasAlpha) {
     octx.globalCompositeOperation = 'destination-in';

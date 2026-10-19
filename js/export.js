@@ -35,12 +35,23 @@ export function addHistory(blob, name) {
   th.width = 140;
   th.height = Math.max(40, Math.round(140 * state.target.h / state.target.w));
   th.getContext('2d').drawImage($('#cvAfter'), 0, 0, th.width, th.height);
-  state.history.push({
+  const item = {
     url: URL.createObjectURL(blob),
     name,
     thumb: th.toDataURL('image/jpeg', .7)
-  });
+  };
+  state.history.push(item);
   renderHistory();
+  return item;
+}
+
+export function downloadLastVideo() {
+  if (!state.lastVideo) {
+    toast('Primero procesa el video para descargarlo');
+    return;
+  }
+  downloadBlob(state.lastVideo.blob, state.lastVideo.name, state.lastVideo.url);
+  toast('Video descargado', 'ok');
 }
 
 export function canvasToBlob(after = $('#cvAfter')) {
@@ -70,8 +81,8 @@ export async function exportImage(nameOverride) {
   }
   const ext = state.format === 'jpg' ? 'jpg' : state.format;
   const name = nameOverride || outputName(ext);
-  downloadBlob(b, name);
-  addHistory(b, name);
+  const item = addHistory(b, name);
+  downloadBlob(null, name, item.url);
   const file = new File([b], name, { type: MIME[state.format] });
   state.share = (navigator.canShare && navigator.canShare({ files: [file] }))
     ? { files: [file], title: name }
@@ -85,11 +96,20 @@ export async function shareCurrent() {
     return;
   }
   if (state.mediaType === 'video') {
-    if (!state.share) {
+    if (!state.lastVideo || !state.lastVideo.blob) {
       toast('Primero procesa el video para poder compartirlo');
       return;
     }
-    try { await navigator.share(state.share); } catch (e) {}
+    try {
+      const vf = new File([state.lastVideo.blob], state.lastVideo.name, {
+        type: state.lastVideo.type || 'video/mp4'
+      });
+      if (!navigator.canShare || navigator.canShare({ files: [vf] })) {
+        await navigator.share({ files: [vf], title: state.lastVideo.name });
+      } else {
+        toast('Tu navegador no permite compartir este video; usa Descargar video', 'err');
+      }
+    } catch (e) {}
     return;
   }
   const b = await canvasToBlob($('#cvAfter'));

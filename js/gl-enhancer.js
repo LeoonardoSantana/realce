@@ -308,6 +308,7 @@ export class GLEnhancer {
     this.smallTexB = null;
     this.fboA = null;
     this.fboB = null;
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   }
 
   uLoc(prog, name) {
@@ -317,7 +318,7 @@ export class GLEnhancer {
 
   quad(prog) {
     const gl = this.gl;
-    const a = gl.getAttribLocation(prog, 'a');
+    const a = prog.__a !== undefined ? prog.__a : (prog.__a = gl.getAttribLocation(prog, 'a'));
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
     gl.enableVertexAttribArray(a);
     gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
@@ -361,6 +362,8 @@ export class GLEnhancer {
       w = t.width;
       h = t.height;
     }
+    const prevW = isOrig ? this.origW : this.srcW;
+    const prevH = isOrig ? this.origH : this.srcH;
     if (isOrig) {
       this.origW = w;
       this.origH = h;
@@ -368,9 +371,12 @@ export class GLEnhancer {
       this.srcW = w;
       this.srcH = h;
     }
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s);
+    if (w === prevW && h === prevH && w > 0 && h > 0) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, s);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s);
+    }
   }
 
   render(src, p, origSrc = null) {

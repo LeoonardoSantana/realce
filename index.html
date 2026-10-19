@@ -30,6 +30,17 @@
     <p>Mejora imágenes y videos a 2K y 4K. Todo en tu dispositivo.</p>
   </section>
   <div class="wrap">
+    <div id="recoverWrap" class="card recover-card" hidden>
+      <div class="recover-info">
+        <strong>Video procesado listo para guardar</strong>
+        <span id="recoverMeta"></span>
+      </div>
+      <div class="recover-actions">
+        <button class="btn btn-p sm" id="btnRecoverDl" type="button">Descargar video</button>
+        <button class="btn btn-s sm" id="btnRecoverDismiss" type="button">Quitar</button>
+      </div>
+    </div>
+
     <div id="drop" class="drop" role="button" tabindex="0" aria-label="Elegir una imagen o un video">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V5m0 0l-4 4m4-4l4 4"/><path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3"/></svg>
       <p class="t1">Arrastra una imagen o video, o toca para elegir</p>

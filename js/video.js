@@ -1,8 +1,8 @@
-import { $, toast, formatTime, showProgress, hideProgress, downloadBlob } from './utils.js';
+import { $, toast, formatTime, showProgress, hideProgress, downloadBlob, startBackgroundGuard, stopBackgroundGuard, notifyCompletion } from './utils.js';
 import { state } from './state.js';
 import { exportImage, addHistory, outputName, baseName } from './export.js';
-import { exportVideoWebCodecs } from './video-export.js';
-import { loadAI, upscaleWithAI } from './ai.js';
+import { exportVideoWebCodecs, saveRecoverableVideo } from './video-export.js';
+import { loadAI, upscaleWithAI, resetVideoFrameCache } from './ai.js';
 
 /* ================= Procesado de video ================= */
 let renderFrame = () => {};
@@ -11,7 +11,14 @@ let openFileFn = () => {};
 let setEngineFn = () => {};
 let paramsFn = () => ({ sharp: 0, noise: 0, skin: 0, fidelity: 0, bright: 0, contrast: 0, sat: 0, definition: 0 });
 let frameCanvas = null;
+let frameCtx = null;
+let lastRenderedParamsKey = '';
+let lastBeforeDrawTime = 0;
 const video = () => $('#vid');
+
+function serializeParams(p) {
+  return `${p.sharp}|${p.noise}|${p.skin}|${p.fidelity}|${p.bright}|${p.contrast}|${p.sat}|${p.definition}`;
+}
 
 export function webCodecsSupported() {
   return 'VideoEncoder' in window && 'VideoDecoder' in window;
@@ -36,16 +43,25 @@ async function setupAudio(stream) {
 }
 
 async function lockWake() {
-  try {
-    state.wakeLock = await (navigator.wakeLock && navigator.wakeLock.request('screen'));
-  } catch (e) {}
+  await startBackgroundGuard();
 }
 
 async function unlockWake() {
-  try {
-    if (state.wakeLock) await state.wakeLock.release();
-  } catch (e) {}
-  state.wakeLock = null;
+  await stopBackgroundGuard();
+}
+
+async function finalizeVideoOutput(blob, name, type = 'video/mp4') {
+  await saveRecoverableVideo(blob, name, !!blob.__fromOpfs);
+  const histItem = addHistory(blob, name);
+  if (state.lastVideo && state.lastVideo.url && !state.history.some(h => h.url === state.lastVideo.url)) {
+    URL.revokeObjectURL(state.lastVideo.url);
+  }
+  state.lastVideo = { blob, name, type, url: histItem.url };
+  state.share = navigator.share ? { video: true } : null;
+  updateUI();
+  downloadBlob(null, name, histItem.url);
+  toast('Video mejorado descargado (también disponible en «Descargar video»)', 'ok');
+  notifyCompletion('Video mejorado listo', `${name} está listo y descargado en tu dispositivo.`);
 }
 
 export async function processVideo() {
@@ -55,28 +71,46 @@ export async function processVideo() {
 
 /* ---- Fotograma a fotograma (WebCodecs + Mediabunny) ---- */
 async function renderSample(sample) {
-  if (!frameCanvas) frameCanvas = document.createElement('canvas');
+  if (!frameCanvas) {
+    frameCanvas = document.createElement('canvas');
+    frameCtx = frameCanvas.getContext('2d', { willReadFrequently: true });
+  }
   const w = sample.displayWidth;
   const h = sample.displayHeight;
   if (frameCanvas.width !== w || frameCanvas.height !== h) {
     frameCanvas.width = w;
     frameCanvas.height = h;
+    frameCtx = frameCanvas.getContext('2d', { willReadFrequently: true });
+    lastRenderedParamsKey = '';
   }
-  sample.draw(frameCanvas.getContext('2d'), 0, 0);
+  sample.draw(frameCtx, 0, 0);
+  const p = paramsFn();
+  const pKey = serializeParams(p);
   if (state.engine === 'ia') {
     const aiOut = await upscaleWithAI(frameCanvas, true);
-    state.enhancer.render(aiOut, paramsFn(), frameCanvas);
+    if (!aiOut.__unchanged || pKey !== lastRenderedParamsKey) {
+      state.enhancer.render(aiOut, p, frameCanvas);
+      lastRenderedParamsKey = pKey;
+    }
   } else {
-    state.enhancer.render(frameCanvas, paramsFn(), frameCanvas);
+    state.enhancer.render(frameCanvas, p, frameCanvas);
+    lastRenderedParamsKey = pKey;
   }
-  const cb = $('#cvBefore');
-  cb.getContext('2d').drawImage(frameCanvas, 0, 0, cb.width, cb.height);
+  const now = performance.now();
+  if (!document.hidden && (now - lastBeforeDrawTime > 250 || lastBeforeDrawTime === 0)) {
+    const cb = $('#cvBefore');
+    cb.getContext('2d').drawImage(frameCanvas, 0, 0, cb.width, cb.height);
+    lastBeforeDrawTime = now;
+  }
   return $('#cvAfter');
 }
 
 async function processVideoWebCodecs() {
   state.busy = true;
   state.cancelled = false;
+  lastRenderedParamsKey = '';
+  lastBeforeDrawTime = 0;
+  resetVideoFrameCache();
   updateUI();
   showProgress(0, state.engine === 'ia' ? 'Cargando modelo de IA para video…' : 'Generando video…');
   await lockWake();
@@ -103,14 +137,7 @@ async function processVideoWebCodecs() {
       signal: aborter.signal
     });
     const name = outputName('mp4');
-    downloadBlob(blob, name);
-    addHistory(blob, name);
-    const sharedFile = new File([blob], name, { type: 'video/mp4' });
-    state.share = (navigator.canShare && navigator.canShare({ files: [sharedFile] }))
-      ? { files: [sharedFile], title: name }
-      : null;
-    updateUI();
-    toast('Video mejorado descargado', 'ok');
+    await finalizeVideoOutput(blob, name, 'video/mp4');
   } catch (e) {
     const mb = await import('../vendor/mediabunny-1.61.3.min.mjs').catch(() => null);
     if (state.cancelled || (mb && e instanceof mb.ConversionCanceledError)) {
@@ -289,13 +316,7 @@ async function processVideoRecorder() {
   const blob = new Blob(chunks, { type });
   const ext = type.includes('mp4') ? 'mp4' : 'webm';
   const name = outputName(ext);
-  downloadBlob(blob, name);
-  addHistory(blob, name);
-  const sharedFile = new File([blob], name, { type });
-  state.share = (navigator.canShare && navigator.canShare({ files: [sharedFile] }))
-    ? { files: [sharedFile], title: name }
-    : null;
-  toast('Video mejorado descargado', 'ok');
+  await finalizeVideoOutput(blob, name, type);
 }
 
 function frameStamp(vid) {
@@ -347,7 +368,4 @@ export function initVideo(callbacks) {
       toast('Fotograma abierto como imagen. Pulsa «Mejorar con IA».');
     }, 'image/png');
   };
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && state.busy && state.mediaType === 'video' && !vid.paused) lockWake();
-  });
 }

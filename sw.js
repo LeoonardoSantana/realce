@@ -1,5 +1,5 @@
 'use strict';
-const CACHE = 'realce-v13';
+const CACHE = 'realce-v15';
 const CORE = [
   './',
   'index.html',
@@ -59,4 +59,15 @@ self.addEventListener('fetch', e => {
           hit || (nav ? caches.match('index.html') : Response.error())))
     );
   }
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      for (const client of list) {
+        if ('focus' in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow('./');
+    })
+  );
 });

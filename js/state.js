@@ -74,6 +74,7 @@ export const state = {
   glOK: true,
   history: [],
   share: null,
+  lastVideo: null,
   comparePos: 50,
   target: { w: 0, h: 0 }
 };

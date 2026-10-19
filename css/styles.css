@@ -166,6 +166,44 @@ button {
   padding: 0 20px calc(48px + env(safe-area-inset-bottom));
 }
 
+.recover-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+  border: 1px solid var(--accent);
+}
+
+.recover-card[hidden] {
+  display: none;
+}
+
+.recover-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.recover-info strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.recover-info span {
+  font-size: 13px;
+  color: var(--text2);
+  overflow-wrap: anywhere;
+}
+
+.recover-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 /* ================= Zona de soltar ================= */
 .drop {
   border: 2px dashed var(--dash);

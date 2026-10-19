@@ -1,10 +1,11 @@
-import { $, toast, formatMB, formatTime, showProgress, hideProgress } from './utils.js';
+import { $, toast, formatMB, formatTime, showProgress, hideProgress, downloadBlob, startBackgroundGuard, stopBackgroundGuard, notifyCompletion } from './utils.js';
 import { state, DEFAULTS, PRESETS, AI_MODELS } from './state.js';
 import { createSegmented, refreshAllSegmented } from './segmented.js';
 import { resetView } from './compare.js';
-import { loadAI, upscaleWithAI } from './ai.js';
+import { loadAI, upscaleWithAI, resetVideoFrameCache } from './ai.js';
 import { processVideo, webCodecsSupported } from './video.js';
-import { exportImage, shareCurrent } from './export.js';
+import { exportImage, downloadLastVideo, shareCurrent } from './export.js';
+import { loadRecoverableVideo, clearRecoverableVideo } from './video-export.js';
 
 /* ================= Render / vista previa ================= */
 const video = () => $('#vid');
@@ -173,8 +174,8 @@ export function updateUI() {
   $('#vnote').hidden = img;
   $('#vnote').textContent = webCodecsSupported()
     ? (state.engine === 'ia'
-      ? 'Cada fotograma del video se reconstruirá con IA y limpieza de grano. Mantén la pestaña abierta.'
-      : 'El video se genera fotograma a fotograma y se descarga al terminar. No hace falta reproducirlo.')
+      ? 'Se procesa en 2.º plano sin apagarse; recibirás una notificación cuando termine.'
+      : 'El video se genera fotograma a fotograma en 2.º plano y te avisará al terminar.')
     : 'El video se procesa en tiempo real: tarda lo mismo que dura. Mantén la pestaña visible.';
   $('#qRow').style.opacity = state.format === 'png' ? .4 : 1;
   $('#slQ').disabled = state.format === 'png';
@@ -182,8 +183,10 @@ export function updateUI() {
   $('#btnGo').textContent = img
     ? 'Mejorar con IA'
     : (state.engine === 'ia' ? 'Mejorar video con IA' : 'Mejorar video');
-  $('#btnDl').hidden = !img;
-  $('#btnDl').className = 'btn ' + (img && state.engine !== 'ia' ? 'btn-p' : 'btn-s');
+  const hasVideoReady = !img && !!state.lastVideo;
+  $('#btnDl').hidden = !img && !hasVideoReady;
+  $('#btnDl').textContent = hasVideoReady ? 'Descargar video' : 'Descargar';
+  $('#btnDl').className = 'btn ' + ((img && state.engine !== 'ia') || hasVideoReady ? 'btn-p' : 'btn-s');
   $('#btnShare').hidden = !img && !state.share;
   document.querySelectorAll('#ws input,#ws button').forEach(b => {
     if (b.id !== 'btnCancel' && b.id !== 'btnFrame') b.disabled = state.busy;
@@ -201,6 +204,8 @@ function cleanup() {
   state.image = null;
   state.aiSource = null;
   state.share = null;
+  state.lastVideo = null;
+  resetVideoFrameCache();
   const vid = video();
   vid.pause();
   vid.removeAttribute('src');
@@ -391,6 +396,7 @@ async function processImage() {
   state.cancelled = false;
   updateUI();
   showProgress(0, 'Cargando modelo de IA…');
+  await startBackgroundGuard();
   try {
     await loadAI();
     updateUI();
@@ -399,6 +405,7 @@ async function processImage() {
     state.aiSource = out;
     renderCurrent();
     toast('Imagen mejorada con IA', 'ok');
+    notifyCompletion('Imagen mejorada con IA lista', `${state.file.name} está lista para guardar en ${state.resolution}.`);
   } catch (e) {
     if (e && e.name === 'AbortError') {
       toast('Proceso cancelado');
@@ -409,6 +416,7 @@ async function processImage() {
   } finally {
     state.busy = false;
     hideProgress();
+    await stopBackgroundGuard();
     updateUI();
   }
 }
@@ -468,11 +476,15 @@ export function initUI() {
     else processImage();
   };
   $('#btnDl').onclick = () => {
+    if (state.mediaType === 'video') {
+      downloadLastVideo();
+      return;
+    }
     renderCurrent();
     exportImage();
   };
   $('#btnShare').onclick = () => {
-    renderCurrent();
+    if (state.mediaType !== 'video') renderCurrent();
     shareCurrent();
   };
   $('#btnCancel').onclick = () => {
@@ -483,4 +495,28 @@ export function initUI() {
   initFileInput();
   syncSliders();
   updateUI();
+  initRecoveryBanner();
+}
+
+async function initRecoveryBanner() {
+  const wrap = $('#recoverWrap');
+  if (!wrap) return;
+  const rec = await loadRecoverableVideo();
+  if (!rec || !rec.blob) return;
+  let recUrl = null;
+  $('#recoverMeta').textContent = `${rec.name} · ${formatMB(rec.size || rec.blob.size)}`;
+  wrap.hidden = false;
+  $('#btnRecoverDl').onclick = () => {
+    if (!recUrl) recUrl = URL.createObjectURL(rec.blob);
+    downloadBlob(rec.blob, rec.name, recUrl);
+    toast('Video recuperado descargado', 'ok');
+  };
+  $('#btnRecoverDismiss').onclick = async () => {
+    wrap.hidden = true;
+    if (recUrl) {
+      URL.revokeObjectURL(recUrl);
+      recUrl = null;
+    }
+    await clearRecoverableVideo();
+  };
 }
